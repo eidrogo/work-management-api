@@ -1,0 +1,1359 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Work Management API",
+    "version": "1.0.0",
+    "description": "Versioned backend API for manager-created operational work, worker-owned progress, append-only history, and assignment-email delivery visibility. Development uses seeded opaque bearer tokens; production identity is an external boundary."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8081",
+      "description": "Default local Docker Compose endpoint"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Work items"
+    },
+    {
+      "name": "Worker queue"
+    },
+    {
+      "name": "Notifications"
+    },
+    {
+      "name": "Operations"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/work-items": {
+      "get": {
+        "tags": [
+          "Work items"
+        ],
+        "summary": "List all work items as a manager",
+        "operationId": "listWorkItems",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WorkStatus"
+          },
+          {
+            "$ref": "#/components/parameters/AssigneeID"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deterministically ordered page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Work items"
+        ],
+        "summary": "Create an unassigned work item as a manager",
+        "operationId": "createWorkItem",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Work item",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Previously committed response for the same idempotency key and request",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replayed": {
+                "schema": {
+                  "type": "string",
+                  "const": "true"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/work-items/{work_item_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkItemID"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Work items"
+        ],
+        "summary": "Get an authorized work item",
+        "operationId": "getWorkItem",
+        "description": "Managers can read every item. Workers receive 404 for items not currently assigned to them.",
+        "responses": {
+          "200": {
+            "description": "Work item",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/work-items/{work_item_id}/assignment": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkItemID"
+        },
+        {
+          "$ref": "#/components/parameters/IfMatch"
+        }
+      ],
+      "put": {
+        "tags": [
+          "Work items"
+        ],
+        "summary": "Assign or reassign a work item as a manager",
+        "operationId": "assignWorkItem",
+        "description": "A state-changing assignment requires the current quoted version in If-Match. A replay to the already-current assignee is an idempotent no-op and may omit If-Match. Reassignment is allowed only while ASSIGNED and requires a reason.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignWorkItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Work item",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/work-items/{work_item_id}/start": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkItemID"
+        },
+        {
+          "$ref": "#/components/parameters/IfMatch"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Worker queue"
+        ],
+        "summary": "Move assigned work to in progress",
+        "operationId": "startWorkItem",
+        "description": "Only the current worker may perform the transition. A replay after success is idempotent.",
+        "responses": {
+          "200": {
+            "description": "Work item",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/work-items/{work_item_id}/complete": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkItemID"
+        },
+        {
+          "$ref": "#/components/parameters/IfMatch"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Worker queue"
+        ],
+        "summary": "Move in-progress work to completed",
+        "operationId": "completeWorkItem",
+        "description": "Only the current worker may complete the item. Completed items are immutable.",
+        "responses": {
+          "200": {
+            "description": "Work item",
+            "headers": {
+              "ETag": {
+                "description": "Quoted work-item version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/work-items/{work_item_id}/history": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkItemID"
+        },
+        {
+          "$ref": "#/components/parameters/Limit"
+        },
+        {
+          "$ref": "#/components/parameters/Cursor"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Work items"
+        ],
+        "summary": "List append-only work-item history",
+        "operationId": "listWorkItemHistory",
+        "responses": {
+          "200": {
+            "description": "History in ascending event sequence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemHistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/me/work-items": {
+      "get": {
+        "tags": [
+          "Worker queue"
+        ],
+        "summary": "List the authenticated worker's queue",
+        "operationId": "listOwnWorkItems",
+        "description": "The assignee is always derived from the authenticated principal; caller filters cannot widen scope.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WorkStatus"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Worker-scoped deterministic page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "List assignment-email delivery records as a manager",
+        "operationId": "listNotifications",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/NotificationStatus"
+          },
+          {
+            "$ref": "#/components/parameters/NotificationWorkItemID"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification delivery page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/notifications/{notification_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/NotificationID"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Inspect one assignment-email delivery as a manager",
+        "operationId": "getNotification",
+        "responses": {
+          "200": {
+            "description": "Notification delivery",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/notifications/{notification_id}/replay": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/NotificationID"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Start a new retry cycle for a failed delivery",
+        "operationId": "replayNotification",
+        "responses": {
+          "202": {
+            "description": "Failed delivery returned to PENDING in a new cycle",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidInput"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "security": [],
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Process liveness",
+        "operationId": "liveness",
+        "responses": {
+          "200": {
+            "description": "Process is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "security": [],
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Database-backed readiness",
+        "operationId": "readiness",
+        "responses": {
+          "200": {
+            "description": "Dependencies are ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/DependencyUnavailable"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "security": [],
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Prometheus-compatible metrics",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Opaque development token locally; replace with externally verified OIDC/JWT in production."
+      }
+    },
+    "parameters": {
+      "WorkItemID": {
+        "name": "work_item_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "NotificationID": {
+        "name": "notification_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": false,
+        "description": "Strong quoted version such as \"2\". Required when the command would mutate state.",
+        "schema": {
+          "type": "string",
+          "pattern": "^\"[1-9][0-9]*\"$"
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "WorkStatus": {
+        "name": "status",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/WorkItemStatus"
+        }
+      },
+      "AssigneeID": {
+        "name": "assignee_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "NotificationStatus": {
+        "name": "status",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/NotificationStatus"
+        }
+      },
+      "NotificationWorkItemID": {
+        "name": "work_item_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "AuthenticationRequired": {
+        "description": "Bearer authentication is missing or invalid",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "PermissionDenied": {
+        "description": "Authenticated principal lacks the capability",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "InvalidInput": {
+        "description": "Request validation failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found or intentionally hidden",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Lifecycle, assignment, idempotency, or concurrency conflict",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Semantically invalid assignee or reassignment request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "Request body is not application/json",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "DependencyUnavailable": {
+        "description": "Required dependency is unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected internal error with no provider or SQL details",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "WorkItemStatus": {
+        "type": "string",
+        "enum": [
+          "UNASSIGNED",
+          "ASSIGNED",
+          "IN_PROGRESS",
+          "COMPLETED"
+        ]
+      },
+      "NotificationStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "PROCESSING",
+          "SENT",
+          "FAILED"
+        ]
+      },
+      "WorkItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "status",
+          "creator_id",
+          "creator_name",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkItemStatus"
+          },
+          "creator_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "creator_name": {
+            "type": "string"
+          },
+          "assignee_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignee_name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WorkItemEvent": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "id",
+          "work_item_id",
+          "actor_id",
+          "actor_name",
+          "type",
+          "occurred_at"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actor_name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "WORK_ITEM_CREATED",
+              "WORK_ITEM_ASSIGNED",
+              "WORK_ITEM_REASSIGNED",
+              "WORK_ITEM_MARKED_IN_PROGRESS",
+              "WORK_ITEM_COMPLETED"
+            ]
+          },
+          "from_status": {
+            "$ref": "#/components/schemas/WorkItemStatus"
+          },
+          "to_status": {
+            "$ref": "#/components/schemas/WorkItemStatus"
+          },
+          "previous_assignee_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "new_assignee_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "required": [
+          "id",
+          "work_item_id",
+          "assignment_event_sequence",
+          "recipient_email",
+          "recipient_name",
+          "event_type",
+          "payload",
+          "status",
+          "attempt_count",
+          "delivery_cycle",
+          "cycle_attempt_count",
+          "message_id",
+          "created_at",
+          "updated_at",
+          "deduplication_key"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_event_sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recipient_email": {
+            "type": "string",
+            "format": "email"
+          },
+          "recipient_name": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string",
+            "const": "WORK_ITEM_ASSIGNED_EMAIL"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/NotificationStatus"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "delivery_cycle": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cycle_attempt_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_attempt_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "provider_message_id": {
+            "type": "string"
+          },
+          "locked_by": {
+            "type": "string"
+          },
+          "locked_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_attempt_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deduplication_key": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationAttempt"
+            },
+            "description": "Present on the single-notification view; omitted from list pages."
+          }
+        }
+      },
+      "CreateWorkItemRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000,
+            "default": ""
+          }
+        }
+      },
+      "AssignWorkItemRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assignee_id"
+        ],
+        "properties": {
+          "assignee_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      },
+      "Page": {
+        "type": "object",
+        "required": [
+          "next_cursor"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkItemResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/WorkItem"
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "idempotent": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "WorkItemListResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "page"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          }
+        }
+      },
+      "WorkItemHistoryResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "page"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkItemEvent"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          }
+        }
+      },
+      "NotificationResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Notification"
+          }
+        }
+      },
+      "NotificationListResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "page"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "NotificationAttempt": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "attempt_number",
+          "worker_id",
+          "outcome",
+          "started_at",
+          "finished_at"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "attempt_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "worker_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "SENT",
+              "RETRY_SCHEDULED",
+              "FAILED",
+              "ABANDONED"
+            ]
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}

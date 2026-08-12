@@ -1,0 +1,16 @@
+DROP TRIGGER IF EXISTS notification_attempts_append_only ON notification_attempts;
+DROP TRIGGER IF EXISTS work_item_events_append_only ON work_item_events;
+DROP TRIGGER IF EXISTS work_items_protect_invariants ON work_items;
+DROP TRIGGER IF EXISTS users_protect_assigned_worker_role ON users;
+DROP TRIGGER IF EXISTS work_items_enforce_assignee_role ON work_items;
+DROP FUNCTION IF EXISTS reject_append_only_mutation();
+DROP FUNCTION IF EXISTS protect_work_item_invariants();
+DROP FUNCTION IF EXISTS protect_assigned_worker_role();
+DROP FUNCTION IF EXISTS enforce_work_item_assignee_role();
+DROP TABLE IF EXISTS notification_attempts;
+DROP TABLE IF EXISTS notification_deliveries;
+DROP TABLE IF EXISTS work_item_events;
+DROP TABLE IF EXISTS idempotency_keys;
+DROP TABLE IF EXISTS work_items;
+DROP TABLE IF EXISTS auth_tokens;
+DROP TABLE IF EXISTS users;

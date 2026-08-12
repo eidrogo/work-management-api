@@ -1,0 +1,42 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.4-bookworm
+        env:
+          POSTGRES_DB: work_management_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d work_management_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/work_management_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.2"
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y libpq-dev pkg-config
+      - run: make fmt-check
+      - run: make vet
+      - run: go test -count=1 ./...
+      - run: go test -race -count=1 ./...
+      - run: make openapi-check
+      - run: make secret-check
+      - run: make build
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+      - run: docker build -t work-management-api:${{ github.sha }} .
