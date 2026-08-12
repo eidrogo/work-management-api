@@ -176,7 +176,7 @@ func (service *Service) list(ctx context.Context, input ListInput, forcedAssigne
 	if err != nil {
 		return Page{}, fmt.Errorf("list work items: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	items := make([]WorkItem, 0, input.Limit+1)
 	for rows.Next() {
 		item, err := scanWorkItem(rows)

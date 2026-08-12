@@ -223,7 +223,7 @@ func readApplied(ctx context.Context, conn *sql.Conn) (map[int64]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := map[int64]string{}
 	for rows.Next() {
 		var version int64

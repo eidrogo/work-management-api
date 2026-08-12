@@ -1,6 +1,6 @@
 # ADR 0005: Narrow `database/sql` Adapter over System `libpq`
 
-- **Status:** Accepted for the assessment; replacement required before production
+- **Status:** Superseded by [ADR 0006](0006-pgx-stdlib-driver.md)
 - **Date:** 2026-08-12
 
 ## Context

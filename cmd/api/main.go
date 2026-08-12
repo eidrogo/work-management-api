@@ -45,7 +45,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.System{})
 	workService, err := workitems.NewService(db, clock.System{}, id.NewUUID)
 	if err != nil {

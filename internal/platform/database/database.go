@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eidrogo/work-management-api/internal/platform/postgres"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type PoolConfig struct {
@@ -29,27 +31,30 @@ func DefaultPoolConfig(maxOpenConns int) (PoolConfig, error) {
 	return PoolConfig{maxOpenConns, maxIdle, 30 * time.Minute, 5 * time.Minute}, nil
 }
 
-func BuildDSN(databaseURL, applicationName string) (string, error) {
+func BuildConfig(databaseURL, applicationName string) (*pgx.ConnConfig, error) {
 	if strings.TrimSpace(databaseURL) == "" || strings.TrimSpace(applicationName) == "" {
-		return "", fmt.Errorf("DATABASE_URL and application name are required")
+		return nil, fmt.Errorf("DATABASE_URL and application name are required")
 	}
 	parsed, err := url.Parse(databaseURL)
 	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Host == "" || strings.Trim(parsed.Path, "/") == "" {
-		return "", fmt.Errorf("DATABASE_URL must be a valid postgres URL with host and database name")
+		return nil, fmt.Errorf("DATABASE_URL must be a valid postgres URL with host and database name")
 	}
-	query := parsed.Query()
-	query.Set("application_name", applicationName)
-	query.Del("timezone")
-	options := strings.TrimSpace(query.Get("options"))
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil || config.Host == "" || config.Database == "" {
+		return nil, fmt.Errorf("DATABASE_URL must be a valid postgres URL with host and database name")
+	}
+	config.RuntimeParams["application_name"] = applicationName
+	delete(config.RuntimeParams, "timezone")
+	options := strings.TrimSpace(config.RuntimeParams["options"])
 	if options != "" {
 		options += " "
 	}
-	query.Set("options", options+"-c timezone=UTC")
-	if query.Get("connect_timeout") == "" {
-		query.Set("connect_timeout", "5")
+	config.RuntimeParams["options"] = options + "-c timezone=UTC"
+	if !parsed.Query().Has("connect_timeout") {
+		config.ConnectTimeout = 5 * time.Second
 	}
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
+	config.DefaultQueryExecMode = pgx.QueryExecModeExec
+	return config, nil
 }
 
 func Open(ctx context.Context, databaseURL, applicationName string, maxOpenConns int) (*sql.DB, error) {
@@ -57,14 +62,18 @@ func Open(ctx context.Context, databaseURL, applicationName string, maxOpenConns
 	if err != nil {
 		return nil, err
 	}
-	dsn, err := BuildDSN(databaseURL, applicationName)
+	config, err := BuildConfig(databaseURL, applicationName)
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open(postgres.DriverName, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open PostgreSQL pool: %w", err)
-	}
+	db := stdlib.OpenDB(*config, stdlib.OptionAfterConnect(func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{
+			Name:  "timestamptz",
+			OID:   pgtype.TimestamptzOID,
+			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+		})
+		return nil
+	}))
 	db.SetMaxOpenConns(cfg.MaxOpenConns)
 	db.SetMaxIdleConns(cfg.MaxIdleConns)
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)

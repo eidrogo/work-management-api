@@ -27,7 +27,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	runner := migrations.Runner{DB: db, Dir: cfg.MigrationsDir}
 	action := "up"
 	if len(os.Args) > 1 {

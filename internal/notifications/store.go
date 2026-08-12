@@ -200,7 +200,7 @@ func (store *Store) List(ctx context.Context, input ListInput) (Page, error) {
 	if err != nil {
 		return Page{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var deliveries []Delivery
 	for rows.Next() {
 		delivery, err := scanDelivery(rows)
@@ -234,7 +234,7 @@ FROM notification_attempts WHERE notification_id=$1 ORDER BY attempt_number ASC`
 	if err != nil {
 		return Delivery{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var attempt Attempt
 		var outcome string

@@ -44,7 +44,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	store, err := notifications.NewStore(db)
 	if err != nil {
 		return err

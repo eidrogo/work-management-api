@@ -44,4 +44,4 @@ Page on database unavailability, growing notification age, no successful attempt
 
 ## Before production
 
-Replace development authentication with OIDC/JWT verification, use a maintained PostgreSQL Go driver, managed HA PostgreSQL, secret management, TLS, private operational endpoints, rate limiting, distributed tracing, load/failure testing, runbooks, on-call ownership, provider delivery webhooks, signed artifacts, SBOM/dependency scanning, tenant isolation, retention policy, and explicit administrative correction commands.
+Replace development authentication with OIDC/JWT verification, use managed HA PostgreSQL, secret management, TLS, private operational endpoints, rate limiting, distributed tracing, load/failure testing, runbooks, on-call ownership, provider delivery webhooks, signed artifacts, SBOM/dependency scanning, tenant isolation, retention policy, and explicit administrative correction commands.

@@ -74,7 +74,7 @@ func doJSON(t *testing.T, client *http.Client, method, url, token string, header
 }
 func decodeBody(t *testing.T, response *http.Response, destination any) {
 	t.Helper()
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if err := json.NewDecoder(response.Body).Decode(destination); err != nil {
 		t.Fatal(err)
 	}

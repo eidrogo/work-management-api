@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16.4-bookworm
+        image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
         env:
           POSTGRES_DB: work_management_test
           POSTGRES_USER: postgres
@@ -23,20 +23,22 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/work_management_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.23.2"
+          go-version: "1.26.5"
           cache: true
-      - run: sudo apt-get update && sudo apt-get install -y libpq-dev pkg-config
+      - run: go mod download
+      - run: make mod-verify
+      - run: make tidy-check
       - run: make fmt-check
       - run: make vet
-      - run: go test -count=1 ./...
+      - run: CGO_ENABLED=0 go test -count=1 ./...
       - run: go test -race -count=1 ./...
       - run: make openapi-check
       - run: make secret-check
       - run: make build
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v1.61.0
+          version: v2.12.2
       - run: docker build -t work-management-api:${{ github.sha }} .

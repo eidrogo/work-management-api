@@ -103,7 +103,7 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 		_ = connection.Close()
 		return classify(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if sender.config.TLSMode == TLSSTARTTLS {
 		supported, _ := client.Extension("STARTTLS")
 		if !supported {

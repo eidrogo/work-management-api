@@ -166,17 +166,17 @@ Architecture alternatives are compared in [`docs/assessment/architecture-alterna
 
 ### Dependency choices
 
-The Go module deliberately has no third-party Go dependencies.
+The Go module keeps its third-party surface narrow: pgx is the single direct Go dependency.
 
 | Dependency | Problem solved | Why not only the Go standard library | Operational consequence | Replacement cost |
 |---|---|---|---|---|
 | PostgreSQL 16 | Transactions, constraints, concurrent row claims, keyset indexes, durable current/history/outbox state | The standard library has no database server | Shared availability/capacity boundary; migrations, backups, vacuum, and connection limits must be operated | High once data exists, but SQL remains explicit and portable within PostgreSQL |
-| System `libpq` through a narrow cgo driver | PostgreSQL wire/client behavior in the module-proxy-restricted assessment environment | `database/sql` requires a driver | cgo toolchain and OS client-library patching; intentionally not production-ready | Low at application boundaries because services use `database/sql`; transaction/concurrency tests protect replacement |
+| `github.com/jackc/pgx/v5/stdlib` v5.10.0 | Maintained PostgreSQL wire/client behavior behind `database/sql` | `database/sql` requires a driver | Pure-Go builds; pinned module updates and PostgreSQL compatibility must be maintained | Low at application boundaries because services and stores remain on `database/sql` |
 | Mailpit in Compose | Deterministic local SMTP acceptance and message inspection | A custom fake would not prove runtime SMTP transport | Local-only container and UI; no external delivery proof | Trivial; real providers use the same SMTP adapter |
 | Docker Compose | Repeatable database, SMTP sink, migrations, seed, API, and worker startup | Process orchestration is outside Go’s standard library | Requires Docker for the full local path | Low; direct Go commands are documented |
 | Go standard library | HTTP, JSON, TLS, SMTP, logging, cryptography, concurrency, shutdown, and testing | It is sufficient for these boundaries | Small dependency and supply-chain surface, but more explicit code | Individual packages can be replaced behind existing boundaries if measured needs justify it |
 
-The `libpq` choice is captured separately in [ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) because it is an environmental accommodation, not a preferred production default.
+The original assessment-only `libpq` choice is retained as history in [ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) and superseded by the maintained pgx decision in [ADR 0006](docs/adr/0006-pgx-stdlib-driver.md).
 
 ## 9. Repository map
 
@@ -193,9 +193,8 @@ internal/httpapi                    Versioned transport and error contract
 internal/metrics                    Prometheus text metrics
 internal/migrations                 Checksum/advisory-lock migration runner
 internal/notifications              Outbox store, attempts, worker, retry policy
-internal/platform/database          Pool and DSN policy
+internal/platform/database          pgx-backed database/sql pool and connection policy
 internal/platform/email             Real SMTP adapter
-internal/platform/postgres          Assessment-only database/sql libpq adapter
 internal/workitems                  Domain policy and transactional application service
 internal/testsupport/postgrestest   Isolated-schema PostgreSQL test harness
 internal/workeradmin                Worker liveness/readiness/metrics
@@ -288,18 +287,9 @@ Mailpit proves real SMTP transport behavior and local server acceptance. It does
 
 ### Direct Go workflow
 
-- Go 1.23.2
-- a C compiler
-- `pkg-config`
-- PostgreSQL `libpq` runtime and development headers
+- Go 1.26.5 (the module declares Go 1.26.0 and pins this toolchain)
 - PostgreSQL 16-compatible server
 - an SMTP server or provider
-
-On Debian/Ubuntu, the direct-build system packages are typically:
-
-```bash
-sudo apt-get install build-essential pkg-config libpq-dev
-```
 
 ## 15. Fastest local run
 
@@ -540,7 +530,7 @@ Production configuration rejects plaintext SMTP and TLS verification bypass. It 
 Run tests that do not require a local PostgreSQL server:
 
 ```bash
-go test ./...
+CGO_ENABLED=0 go test ./...
 go test -race ./...
 ```
 
@@ -634,14 +624,12 @@ Before production:
 - private metrics/health exposure;
 - rate limiting and abuse controls;
 - dependency/SBOM/vulnerability scanning;
-- maintained PostgreSQL Go driver;
 - threat model, security review, and penetration test;
 - multi-team isolation if introduced.
 
 ## 24. Known limitations and accepted debt
 
 - The API intentionally cannot start in `APP_ENV=production` until a production authenticator replaces the development token adapter.
-- The `libpq` cgo driver is an assessment-environment accommodation and must be replaced with a maintained driver before production.
 - SMTP exactly-once delivery is impossible with this generic interface.
 - No bounce/delivery/open webhooks.
 - Manual replay actor is in structured logs, not a dedicated immutable operator-audit table.
@@ -662,6 +650,7 @@ Before production:
 3. [ADR 0003: Identity and authorization](docs/adr/0003-identity-and-authorization.md)
 4. [ADR 0004: Lifecycle, concurrency, pagination](docs/adr/0004-lifecycle-concurrency-pagination.md)
 5. [ADR 0005: Assessment `libpq` adapter](docs/adr/0005-libpq-assessment-adapter.md)
+6. [ADR 0006: Maintained pgx `database/sql` driver](docs/adr/0006-pgx-stdlib-driver.md)
 
 ## 26. Required reflection answers
 
@@ -683,11 +672,11 @@ PostgreSQL will become the first shared pressure point: connection limits, outbo
 
 ### 5. What did you intentionally simplify or defer, and what debt did you accept?
 
-I deferred production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, full operator audit, and compliance retention. I accepted a narrow cgo `libpq` adapter because the execution environment could not fetch modules; replacing it is a pre-production requirement. I also accepted process-local counters and sequential delivery inside each worker process.
+I deferred production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, full operator audit, and compliance retention. The original narrow cgo `libpq` accommodation was replaced before submission with maintained pgx while preserving `database/sql` boundaries. I also accepted process-local counters and sequential delivery inside each worker process.
 
 ### 6. What would you put in place before production?
 
-Externally verified OIDC/JWT, secret management, TLS PostgreSQL/SMTP, a maintained DB driver, HA database and tested restores, backward-compatible migration policy, RED and queue dashboards, agreed SLOs/alerts, distributed tracing, rate limits, threat modeling, dependency/SBOM scanning, signed builds, load/failure testing, runbooks, on-call ownership, incident exercises, provider idempotency/webhooks, and privacy/retention policy.
+Externally verified OIDC/JWT, secret management, TLS PostgreSQL/SMTP, HA database and tested restores, backward-compatible migration policy, RED and queue dashboards, agreed SLOs/alerts, distributed tracing, rate limits, threat modeling, dependency/SBOM scanning, signed builds, load/failure testing, runbooks, on-call ownership, incident exercises, provider idempotency/webhooks, and privacy/retention policy.
 
 ### 7. How would you evolve for audit history, webhooks, or multi-team usage?
 

@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
-.PHONY: help fmt fmt-check tidy vet test test-race lint build openapi-check secret-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
+.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race lint build openapi-check secret-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
 help:
 	@printf '%s\n' 'make up - start the complete stack' 'make demo - run the documented flow' 'make verify - static/unit verification'
 fmt:
@@ -9,10 +9,14 @@ fmt-check:
 	@test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*'))" || (gofmt -l $$(find . -name '*.go' -not -path './vendor/*'); exit 1)
 tidy:
 	go mod tidy
+tidy-check:
+	go mod tidy -diff
+mod-verify:
+	go mod verify
 vet:
-	go vet ./...
+	CGO_ENABLED=0 go vet ./...
 test:
-	go test ./...
+	CGO_ENABLED=0 go test ./...
 test-race:
 	go test -race ./...
 lint:
@@ -20,16 +24,16 @@ lint:
 	golangci-lint run ./...
 build:
 	mkdir -p bin
-	CGO_ENABLED=1 go build -o bin/api ./cmd/api
-	CGO_ENABLED=1 go build -o bin/worker ./cmd/worker
-	CGO_ENABLED=1 go build -o bin/migrate ./cmd/migrate
-	CGO_ENABLED=1 go build -o bin/seed ./cmd/seed
-	CGO_ENABLED=1 go build -o bin/replay-notification ./cmd/replay-notification
+	CGO_ENABLED=0 go build -o bin/api ./cmd/api
+	CGO_ENABLED=0 go build -o bin/worker ./cmd/worker
+	CGO_ENABLED=0 go build -o bin/migrate ./cmd/migrate
+	CGO_ENABLED=0 go build -o bin/seed ./cmd/seed
+	CGO_ENABLED=0 go build -o bin/replay-notification ./cmd/replay-notification
 openapi-check:
-	go test ./internal/contract -run TestOpenAPIContract -count=1
+	CGO_ENABLED=0 go test ./internal/contract -run TestOpenAPIContract -count=1
 secret-check:
 	./scripts/check-secrets.sh
-verify: fmt-check vet test test-race openapi-check secret-check build
+verify: fmt-check mod-verify tidy-check vet test test-race openapi-check secret-check build
 verify-full: verify lint docker-build compose-smoke
 compose-smoke:
 	./scripts/verify-compose.sh

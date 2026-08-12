@@ -9,7 +9,7 @@ x-app-environment: &app-environment
 
 services:
   postgres:
-    image: postgres:16.4-bookworm
+    image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
     environment:
       POSTGRES_DB: work_management
       POSTGRES_USER: work
@@ -23,7 +23,7 @@ services:
     volumes: ["postgres-data:/var/lib/postgresql/data"]
 
   mailpit:
-    image: axllent/mailpit:v1.20.4
+    image: axllent/mailpit:v1.30.7@sha256:d5ecbb067db3705fa953d79e1b7f81ef84038df67aba6c52825d8c02a1ea748a
     ports:
       - "${SMTP_PORT:-1025}:1025"
       - "${MAILPIT_UI_PORT:-8025}:8025"

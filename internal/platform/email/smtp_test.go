@@ -59,7 +59,7 @@ func (server *smtpServer) serve() {
 	if err != nil {
 		return
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	reader := bufio.NewReader(connection)
 	writer := bufio.NewWriter(connection)
 	write := func(format string, args ...any) { _, _ = fmt.Fprintf(writer, format, args...); _ = writer.Flush() }
