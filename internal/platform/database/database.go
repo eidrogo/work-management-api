@@ -44,7 +44,11 @@ func BuildConfig(databaseURL, applicationName string) (*pgx.ConnConfig, error) {
 		return nil, fmt.Errorf("DATABASE_URL must be a valid postgres URL with host and database name")
 	}
 	config.RuntimeParams["application_name"] = applicationName
-	delete(config.RuntimeParams, "timezone")
+	for key := range config.RuntimeParams {
+		if strings.EqualFold(key, "timezone") {
+			delete(config.RuntimeParams, key)
+		}
+	}
 	options := strings.TrimSpace(config.RuntimeParams["options"])
 	if options != "" {
 		options += " "

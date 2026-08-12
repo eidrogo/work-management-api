@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -40,6 +41,36 @@ func TestOpenConfiguresPostgreSQLSession(t *testing.T) {
 	}
 	if timezone != "UTC" {
 		t.Fatalf("TimeZone=%q", timezone)
+	}
+}
+
+func TestOpenEnforcesUTCAgainstMixedCaseTimeZone(t *testing.T) {
+	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("TimeZone", "America/Argentina/Buenos_Aires")
+	parsed.RawQuery = query.Encode()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := Open(ctx, parsed.String(), "work-management-timezone-test", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var timezone string
+	if err := db.QueryRowContext(ctx, `SHOW TimeZone`).Scan(&timezone); err != nil {
+		t.Fatal(err)
+	}
+	if timezone != "UTC" {
+		t.Fatalf("TimeZone=%q want UTC", timezone)
 	}
 }
 

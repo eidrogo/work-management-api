@@ -1,6 +1,7 @@
 package database
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,13 @@ func TestBuildConfigAddsOperationalParameters(t *testing.T) {
 		{
 			name:            "overrides application name and preserves options",
 			databaseURL:     "postgres://user:secret@localhost:5432/work?sslmode=disable&application_name=old&options=-c%20statement_timeout%3D1000&timezone=America%2FArgentina%2FBuenos_Aires",
+			applicationName: "work-management-worker",
+			wantOptions:     "-c statement_timeout=1000 -c timezone=UTC",
+			wantTimeout:     5 * time.Second,
+		},
+		{
+			name:            "removes mixed-case TimeZone override",
+			databaseURL:     "postgres://user:secret@localhost:5432/work?sslmode=disable&options=-c%20statement_timeout%3D1000&TimeZone=America%2FArgentina%2FBuenos_Aires",
 			applicationName: "work-management-worker",
 			wantOptions:     "-c statement_timeout=1000 -c timezone=UTC",
 			wantTimeout:     5 * time.Second,
@@ -61,8 +69,10 @@ func TestBuildConfigAddsOperationalParameters(t *testing.T) {
 			if got := config.RuntimeParams["options"]; got != tt.wantOptions {
 				t.Fatalf("options=%q want %q", got, tt.wantOptions)
 			}
-			if _, exists := config.RuntimeParams["timezone"]; exists {
-				t.Fatalf("standalone timezone runtime parameter was retained: %v", config.RuntimeParams)
+			for key := range config.RuntimeParams {
+				if strings.EqualFold(key, "timezone") {
+					t.Fatalf("standalone timezone runtime parameter %q was retained: %v", key, config.RuntimeParams)
+				}
 			}
 			if config.ConnectTimeout != tt.wantTimeout {
 				t.Fatalf("connect timeout=%s want %s", config.ConnectTimeout, tt.wantTimeout)
