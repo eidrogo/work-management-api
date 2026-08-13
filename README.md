@@ -228,6 +228,8 @@ Current title, description, lifecycle status, immutable creator, nullable assign
 
 Actor, operation, client key, request hash, resource ID, immutable first-response JSON snapshot, and creation time. A matching replay returns that originally committed representation even after later item or user mutation; a key reused with a different payload fails deterministically.
 
+The required `Idempotency-Key` is an opaque valid UTF-8 value containing 1–200 Unicode characters after trimming. Invalid UTF-8 is rejected before ID generation or a database transaction with `400 INVALID_INPUT` and field `Idempotency-Key`.
+
 ### `work_item_events`
 
 Append-only create, assignment, reassignment, start, and completion events with actor, previous/new status, previous/new assignee, reason, sequence, and UTC time.
@@ -578,7 +580,7 @@ make compose-smoke
 The suite protects:
 
 - the complete manager/worker lifecycle, authorization and non-disclosure policy;
-- transport-invalid requests and PostgreSQL-incompatible U+0000 text before mutation, field-specific stable errors/request IDs, ETags, replay headers, and all 11 public operations;
+- transport-invalid requests, invalid UTF-8 idempotency keys, and PostgreSQL-incompatible U+0000 text before mutation, field-specific stable errors/request IDs, ETags, replay headers, and all 11 public operations;
 - immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, coherent repeatable-read notification detail, concurrency conflicts, and keyset traversal;
 - database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
 - one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;

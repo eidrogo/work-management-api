@@ -887,6 +887,7 @@
         "name": "Idempotency-Key",
         "in": "header",
         "required": true,
+        "description": "Opaque retry key containing valid UTF-8, limited to 1–200 Unicode characters after trimming.",
         "schema": {
           "type": "string",
           "minLength": 1,

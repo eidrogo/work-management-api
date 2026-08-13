@@ -43,6 +43,11 @@ func TestTask2OpenAPIContract(t *testing.T) {
 	components := object(t, document, "components")
 	schemas := object(t, components, "schemas")
 	paths := object(t, document, "paths")
+	idempotencyKey := object(t, object(t, components, "parameters"), "IdempotencyKey")
+	idempotencyDescription, _ := idempotencyKey["description"].(string)
+	if !strings.Contains(idempotencyDescription, "valid UTF-8") {
+		t.Fatalf("Idempotency-Key description=%q", idempotencyDescription)
+	}
 
 	replayPath := object(t, paths, "/v1/notifications/{notification_id}/replay")
 	replayPost := object(t, replayPath, "post")

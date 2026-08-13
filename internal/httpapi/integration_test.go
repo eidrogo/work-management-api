@@ -1,20 +1,25 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eidrogo/work-management-api/internal/auth"
+	metricspkg "github.com/eidrogo/work-management-api/internal/metrics"
 	"github.com/eidrogo/work-management-api/internal/notifications"
 	"github.com/eidrogo/work-management-api/internal/platform/clock"
 	"github.com/eidrogo/work-management-api/internal/platform/id"
@@ -421,6 +426,110 @@ func TestHTTPRejectsNULPersistedTextWithoutSideEffects(t *testing.T) {
 	})
 }
 
+func TestHTTPRejectsRawInvalidUTF8IdempotencyKeyWithoutInternalFailure(t *testing.T) {
+	var logs bytes.Buffer
+	registry := metricspkg.New(nil, nil)
+	fixture := newLiveHTTPFixtureWithObservability(t, slog.New(slog.NewJSONHandler(&logs, nil)), registry)
+	beforeItems := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`)
+	beforeEvents := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events`)
+	beforeKeys := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM idempotency_keys`)
+	beforeNotifications := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries`)
+	requestID := "request-invalid-utf8-idempotency"
+
+	response := doRawCreate(t, fixture.server.URL, seed.ManagerToken, requestID, append([]byte("  invalid-"), []byte{0xff, '-', 'k', 'e', 'y', ' ', ' '}...))
+	assertHTTPInvalidField(t, response, requestID, "Idempotency-Key", "The Idempotency-Key header must contain valid UTF-8.")
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`); got != beforeItems {
+		t.Fatalf("work items=%d want=%d", got, beforeItems)
+	}
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events`); got != beforeEvents {
+		t.Fatalf("events=%d want=%d", got, beforeEvents)
+	}
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM idempotency_keys`); got != beforeKeys {
+		t.Fatalf("idempotency keys=%d want=%d", got, beforeKeys)
+	}
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries`); got != beforeNotifications {
+		t.Fatalf("notifications=%d want=%d", got, beforeNotifications)
+	}
+
+	records := decodeJSONLogRecords(t, logs.Bytes())
+	assertLogRecord(t, records, "api mutation", http.StatusBadRequest, "INVALID_INPUT")
+	assertLogRecord(t, records, "http request", http.StatusBadRequest, "")
+	for _, record := range records {
+		if record["msg"] == "request failed" || record["status"] == float64(http.StatusInternalServerError) || record["error_code"] == "INTERNAL_ERROR" {
+			t.Fatalf("unexpected internal-failure log=%v all=%v", record, records)
+		}
+	}
+	logOutput := logs.String()
+	for _, forbidden := range []string{"SQLSTATE", "invalid byte sequence"} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Errorf("logs contain %q:\n%s", forbidden, logOutput)
+		}
+	}
+	if bytes.Contains(logs.Bytes(), []byte{0xff}) {
+		t.Fatalf("logs contain the malformed header byte: %q", logs.Bytes())
+	}
+	metricsResponse := httptest.NewRecorder()
+	registry.ServeHTTP(metricsResponse, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	metricOutput := metricsResponse.Body.String()
+	if !hasExactMetricLine(metricOutput, `work_management_http_requests_total{method="POST",route="/v1/work-items",status="400"} 1`) {
+		t.Fatalf("400 metric missing:\n%s", metricOutput)
+	}
+	for _, line := range strings.Split(metricOutput, "\n") {
+		if strings.HasPrefix(line, "work_management_http_") && strings.Contains(line, `route="/v1/work-items"`) && strings.Contains(line, `status="500"`) {
+			t.Fatalf("false 500 metric present: %s\n%s", line, metricOutput)
+		}
+	}
+
+	unauthenticated := doRawCreate(t, fixture.server.URL, "", requestID+"-unauthenticated", append([]byte("invalid-"), 0xff))
+	assertHTTPError(t, unauthenticated, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED")
+	denied := doRawCreate(t, fixture.server.URL, seed.WorkerAliceToken, requestID+"-worker", append([]byte("invalid-"), 0xff))
+	assertHTTPError(t, denied, http.StatusForbidden, "PERMISSION_DENIED")
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`); got != beforeItems {
+		t.Fatalf("work items after denied request=%d want=%d", got, beforeItems)
+	}
+
+	valid := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/work-items", seed.ManagerToken,
+		map[string]string{"Idempotency-Key": "válido-界", "X-Request-ID": requestID + "-valid"}, []byte(`{"title":"Valid after invalid UTF-8"}`))
+	assertHTTPResponse(t, valid, http.StatusCreated, `"1"`, "")
+	_ = valid.Body.Close()
+}
+
+func decodeJSONLogRecords(t *testing.T, payload []byte) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	for decoder.More() {
+		var record map[string]any
+		if err := decoder.Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func assertLogRecord(t *testing.T, records []map[string]any, message string, status int, errorCode string) {
+	t.Helper()
+	for _, record := range records {
+		if record["msg"] != message || record["status"] != float64(status) {
+			continue
+		}
+		if errorCode == "" || record["error_code"] == errorCode {
+			return
+		}
+	}
+	t.Fatalf("missing log msg=%q status=%d error_code=%q in %v", message, status, errorCode, records)
+}
+
+func hasExactMetricLine(payload, want string) bool {
+	for _, line := range strings.Split(payload, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNULValidationPreservesAuthorizationPrecedence(t *testing.T) {
 	fixture := newLiveHTTPFixture(t)
 	beforeItems := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`)
@@ -442,6 +551,11 @@ type liveHTTPFixture struct {
 
 func newLiveHTTPFixture(t *testing.T) liveHTTPFixture {
 	t.Helper()
+	return newLiveHTTPFixtureWithObservability(t, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+}
+
+func newLiveHTTPFixtureWithObservability(t *testing.T, logger Logger, metricRecorder MetricRecorder) liveHTTPFixture {
+	t.Helper()
 	db := postgrestest.Open(t)
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
@@ -460,7 +574,7 @@ func newLiveHTTPFixture(t *testing.T) liveHTTPFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	handler, err := NewServer(ServerConfig{Logger: logger, Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20, MetricRecorder: metricRecorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,6 +587,45 @@ func newLiveHTTPFixture(t *testing.T) liveHTTPFixture {
 		store:       store,
 		manager:     auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager, DisplayName: "Maya Manager"},
 	}
+}
+
+func doRawCreate(t *testing.T, serverURL, token, requestID string, idempotencyKey []byte) *http.Response {
+	t.Helper()
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.DialTimeout("tcp", parsed.Host, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = connection.Close() }()
+	if err = connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"title":"Invalid UTF-8 idempotency key"}`)
+	payload := []byte(fmt.Sprintf("POST /v1/work-items HTTP/1.1\r\nHost: %s\r\n", parsed.Host))
+	if token != "" {
+		payload = append(payload, []byte("Authorization: Bearer "+token+"\r\n")...)
+	}
+	payload = append(payload, []byte(fmt.Sprintf("Content-Type: application/json\r\nContent-Length: %d\r\nX-Request-ID: %s\r\nIdempotency-Key: ", len(body), requestID))...)
+	payload = append(payload, idempotencyKey...)
+	payload = append(payload, []byte("\r\nConnection: close\r\n\r\n")...)
+	payload = append(payload, body...)
+	if _, err = connection.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(responseBody))
+	return response
 }
 
 func assertHTTPInvalidField(t *testing.T, response *http.Response, requestID, field, message string) {

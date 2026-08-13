@@ -45,6 +45,21 @@ func TestValidateCreateInputEnforcesSMTPCompatibleTitleBoundaries(t *testing.T) 
 	}
 }
 
+func TestValidateCreateInputRejectsInvalidUTF8IdempotencyKey(t *testing.T) {
+	t.Parallel()
+	_, err := ValidateCreateInput(CreateInput{
+		Title:          "Inspect warehouse",
+		IdempotencyKey: "invalid-\xff-key",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error=%v", err)
+	}
+	code, message, details := ErrorContract(err)
+	if code != "INVALID_INPUT" || message != "The Idempotency-Key header must contain valid UTF-8." || len(details) != 1 || details["field"] != "Idempotency-Key" {
+		t.Fatalf("code=%q message=%q details=%v", code, message, details)
+	}
+}
+
 func TestPersistedTextValidationRejectsOnlyNULWithFieldDetails(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

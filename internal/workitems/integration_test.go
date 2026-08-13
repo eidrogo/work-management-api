@@ -363,6 +363,62 @@ func TestServiceRejectsNULPersistedTextBeforeMutation(t *testing.T) {
 	})
 }
 
+func TestServiceRejectsInvalidUTF8IdempotencyKeyBeforeMutation(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := databaseNowForWorkItems(t, db)
+	if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	idCalls := 0
+	service, err := NewService(db, clock.Fixed{Time: now}, func() (string, error) {
+		idCalls++
+		return id.NewUUID()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager}
+	worker := auth.Principal{ID: seed.WorkerAliceID, Role: auth.RoleWorker}
+	invalid := CreateInput{Title: "Invalid UTF-8 idempotency key", IdempotencyKey: "invalid-\xff-key"}
+	beforeItems := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`)
+	beforeEvents := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`)
+	beforeKeys := postgrestest.Count(t, db, `SELECT count(*) FROM idempotency_keys`)
+	beforeNotifications := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries`)
+
+	_, err = service.Create(context.Background(), manager, invalid)
+	assertWorkItemInvalidField(t, err, "Idempotency-Key")
+	if idCalls != 0 {
+		t.Fatalf("ID generator calls=%d want=0", idCalls)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`); got != beforeItems {
+		t.Fatalf("work items=%d want=%d", got, beforeItems)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`); got != beforeEvents {
+		t.Fatalf("events=%d want=%d", got, beforeEvents)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM idempotency_keys`); got != beforeKeys {
+		t.Fatalf("idempotency keys=%d want=%d", got, beforeKeys)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries`); got != beforeNotifications {
+		t.Fatalf("notifications=%d want=%d", got, beforeNotifications)
+	}
+
+	if _, err = service.Create(context.Background(), worker, invalid); !errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("worker create error=%v", err)
+	}
+	if idCalls != 0 {
+		t.Fatalf("ID generator calls after denied create=%d want=0", idCalls)
+	}
+
+	created, err := service.Create(context.Background(), manager, CreateInput{Title: "Valid after invalid UTF-8", IdempotencyKey: "valid-after-invalid-utf8"})
+	if err != nil || created.Item.Version != 1 || created.Idempotent {
+		t.Fatalf("created=%#v error=%v", created, err)
+	}
+	if idCalls != 2 {
+		t.Fatalf("ID generator calls=%d want=2", idCalls)
+	}
+}
+
 func TestServiceAuthorizationPrecedesNULValidation(t *testing.T) {
 	db := postgrestest.Open(t)
 	now := databaseNowForWorkItems(t, db)

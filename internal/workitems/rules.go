@@ -48,6 +48,9 @@ func ValidateCreateInput(input CreateInput) (CreateInput, error) {
 	if input.IdempotencyKey == "" {
 		return CreateInput{}, newError(ErrIdempotencyKeyRequired, "IDEMPOTENCY_KEY_REQUIRED", "An Idempotency-Key header is required.", nil)
 	}
+	if !utf8.ValidString(input.IdempotencyKey) {
+		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "The Idempotency-Key header must contain valid UTF-8.", map[string]any{"field": "Idempotency-Key"})
+	}
 	if utf8.RuneCountInString(input.IdempotencyKey) > 200 {
 		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "The idempotency key is too long.", map[string]any{"field": "Idempotency-Key", "maximum": 200})
 	}

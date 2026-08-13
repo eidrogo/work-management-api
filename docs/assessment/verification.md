@@ -675,7 +675,11 @@ PASS: authorization precedes field validation, and direct service/store boundari
 PASS: complete normal and race suites against live PostgreSQL
 ```
 
-This validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization.
+## FAIL then PASS — invalid UTF-8 idempotency keys
+
+Raw HTTP/1.1 permits `obs-text` bytes in header values. A manager request with byte `0xff` in `Idempotency-Key` originally reached PostgreSQL and failed with SQLSTATE 22021 after transactional work. Regression-first domain, live-service, and raw-wire tests now require a stable field-specific `400 INVALID_INPUT` before ID generation or transaction work, zero database side effects, no internal-error log or 500 metric, and preserved authentication/authorization precedence. A valid non-ASCII key such as `válido-界` remains accepted.
+
+Persisted JSON text validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization. The separate idempotency-key rule rejects malformed byte sequences but keeps valid Unicode.
 
 ## FAIL then PASS — bounded SMTP peer input and immutable Docker frontend
 
