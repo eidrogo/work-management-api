@@ -149,6 +149,132 @@ func assertCompletionErrorAfterClaimsStop(t *testing.T, sentinel error) {
 	}
 }
 
+func TestWorkerRunUntilStoppedPreservesCompletionErrorAtForcedCancellation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		sentinel error
+	}{
+		{name: "sentinel", sentinel: errors.New("database completion failed")},
+		{name: "wrapped context canceled", sentinel: fmt.Errorf("database completion failed: %w", context.Canceled)},
+		{name: "context canceled", sentinel: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assertCompletionErrorAtForcedCancellation(t, test.sentinel)
+		})
+	}
+}
+
+func assertCompletionErrorAtForcedCancellation(t *testing.T, sentinel error) {
+	t.Helper()
+	recorder := &workerEventRecorder{}
+	completionStarted := make(chan struct{})
+	queue := &recordingQueue{recorder: recorder, deliveries: []Delivery{
+		workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1),
+	}, completeError: sentinel, completeStarted: completionStarted, completeAfterCancellation: true}
+	worker, err := NewWorker(queue, recordingSender{recorder: recorder}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-a", BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+		BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-completionStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin completion")
+	}
+	stopClaims()
+	cancelAttempt()
+	select {
+	case err = <-result:
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("completion error was masked: got %v want %v", err, sentinel)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after forced cancellation")
+	}
+}
+
+func TestWorkerRunUntilStoppedPreservesSendErrorAtForcedCancellation(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("SMTP send failed during cancellation")
+	recorder := &workerEventRecorder{}
+	sendStarted := make(chan struct{})
+	queue := &recordingQueue{recorder: recorder, deliveries: []Delivery{
+		workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1),
+	}}
+	worker, err := NewWorker(queue, cancellationErrorWorkerSender{recorder: recorder, started: sendStarted, err: sentinel}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-a", BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+		BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin send")
+	}
+	stopClaims()
+	cancelAttempt()
+	select {
+	case err = <-result:
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("send error was masked: got %v want %v", err, sentinel)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after forced cancellation")
+	}
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{
+		"claim:11111111-1111-4111-8111-111111111111",
+		"send:11111111-1111-4111-8111-111111111111",
+	}) {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+func TestWorkerRunUntilStoppedPreservesSendAndCompletionErrorsWhenCompletionObservesCancellation(t *testing.T) {
+	t.Parallel()
+	sendErr := errors.New("SMTP send failed")
+	completionErr := context.Canceled
+	recorder := &workerEventRecorder{}
+	queue := &recordingQueue{recorder: recorder, deliveries: []Delivery{
+		workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1),
+	}, completeError: completionErr}
+	worker, err := NewWorker(queue, immediateErrorWorkerSender{recorder: recorder, err: sendErr}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-a", BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+		BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	queue.completeHook = func() {
+		stopClaims()
+		cancelAttempt()
+	}
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case err = <-result:
+		if !errors.Is(err, sendErr) || !errors.Is(err, completionErr) {
+			t.Fatalf("error=%v want send=%v completion=%v", err, sendErr, completionErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after completion observed cancellation")
+	}
+}
+
 func TestEveryAcceptedTitleRendersAHeaderValidSubject(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -217,9 +343,12 @@ func (recorder *workerEventRecorder) snapshot() []string {
 }
 
 type recordingQueue struct {
-	recorder      *workerEventRecorder
-	deliveries    []Delivery
-	completeError error
+	recorder                  *workerEventRecorder
+	deliveries                []Delivery
+	completeError             error
+	completeStarted           chan struct{}
+	completeAfterCancellation bool
+	completeHook              func()
 }
 
 func (queue *recordingQueue) ClaimNext(_ context.Context, request ClaimRequest) (Delivery, bool, error) {
@@ -232,8 +361,17 @@ func (queue *recordingQueue) ClaimNext(_ context.Context, request ClaimRequest) 
 	queue.recorder.add("claim:" + delivery.ID)
 	return delivery, true, nil
 }
-func (queue *recordingQueue) Complete(_ context.Context, completion Completion) error {
+func (queue *recordingQueue) Complete(ctx context.Context, completion Completion) error {
 	queue.recorder.add("complete:" + completion.DeliveryID)
+	if queue.completeStarted != nil {
+		close(queue.completeStarted)
+	}
+	if queue.completeHook != nil {
+		queue.completeHook()
+	}
+	if queue.completeAfterCancellation {
+		<-ctx.Done()
+	}
 	return queue.completeError
 }
 
@@ -248,6 +386,29 @@ type blockingWorkerSender struct {
 	recorder *workerEventRecorder
 	entered  chan struct{}
 	release  chan struct{}
+}
+
+type cancellationErrorWorkerSender struct {
+	recorder *workerEventRecorder
+	started  chan struct{}
+	err      error
+}
+
+type immediateErrorWorkerSender struct {
+	recorder *workerEventRecorder
+	err      error
+}
+
+func (sender immediateErrorWorkerSender) Send(_ context.Context, message Message) error {
+	sender.recorder.add("send:" + message.MessageID)
+	return sender.err
+}
+
+func (sender cancellationErrorWorkerSender) Send(ctx context.Context, message Message) error {
+	sender.recorder.add("send:" + message.MessageID)
+	close(sender.started)
+	<-ctx.Done()
+	return sender.err
 }
 
 func (sender blockingWorkerSender) Send(ctx context.Context, message Message) error {

@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eidrogo/work-management-api/internal/notifications"
 )
 
 func TestRunRejectsInvalidWorkerIDBeforeOpeningDependencies(t *testing.T) {
@@ -94,6 +99,45 @@ func TestServeWorkerForcesCancellationAtGraceDeadlineAndReapsBothComponents(t *t
 	worker.waitForceCanceled(t)
 	worker.waitExited(t)
 	admin.waitExited(t)
+}
+
+func TestServeWorkerJoinsGraceDeadlineWithCompletionError(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sentinel error
+	}{
+		{name: "sentinel", sentinel: errors.New("database completion failed")},
+		{name: "wrapped context canceled", sentinel: fmt.Errorf("database completion failed: %w", context.Canceled)},
+		{name: "context canceled", sentinel: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			completionStarted := make(chan struct{})
+			queue := &completionOnCancellationQueue{completionStarted: completionStarted, completionError: test.sentinel}
+			worker, err := notifications.NewWorker(queue, successfulNotificationSender{}, slog.New(slog.NewTextHandler(io.Discard, nil)), notifications.WorkerConfig{
+				WorkerID: "worker-grace-error", BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+				BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			signalCtx, signal := context.WithCancel(context.Background())
+			admin := newLifecycleAdmin()
+			result := make(chan error, 1)
+			go func() { result <- serveWorker(signalCtx, 25*time.Millisecond, worker, admin) }()
+			admin.waitStarted(t)
+			select {
+			case <-completionStarted:
+			case <-time.After(time.Second):
+				t.Fatal("worker did not begin completion")
+			}
+			signal()
+			err = receiveWorkerResult(t, result)
+			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, test.sentinel) {
+				t.Fatalf("error=%v want deadline and %v", err, test.sentinel)
+			}
+			admin.waitExited(t)
+		})
+	}
 }
 
 func TestServeWorkerPreservesFirstComponentError(t *testing.T) {
@@ -252,3 +296,32 @@ func receiveWorkerResult(t *testing.T, result <-chan error) error {
 		return nil
 	}
 }
+
+type completionOnCancellationQueue struct {
+	claimed           bool
+	completionStarted chan struct{}
+	completionError   error
+}
+
+func (queue *completionOnCancellationQueue) ClaimNext(context.Context, notifications.ClaimRequest) (notifications.Delivery, bool, error) {
+	if queue.claimed {
+		return notifications.Delivery{}, false, nil
+	}
+	queue.claimed = true
+	return notifications.Delivery{
+		ID: "11111111-1111-4111-8111-111111111111", WorkItemID: "11111111-1111-4111-8111-111111111111",
+		RecipientEmail: "alice@example.test", RecipientName: "Alice",
+		Payload:   []byte(`{"work_item_id":"11111111-1111-4111-8111-111111111111","work_item_title":"Task","assignee_name":"Alice","assigned_by_name":"Maya","assigned_at":"2026-08-12T12:00:00Z"}`),
+		MessageID: "<grace-error@example.test>", LeaseToken: "22222222-2222-4222-8222-222222222222", AttemptCount: 1, CycleAttemptCount: 1,
+	}, true, nil
+}
+
+func (queue *completionOnCancellationQueue) Complete(ctx context.Context, _ notifications.Completion) error {
+	close(queue.completionStarted)
+	<-ctx.Done()
+	return queue.completionError
+}
+
+type successfulNotificationSender struct{}
+
+func (successfulNotificationSender) Send(context.Context, notifications.Message) error { return nil }

@@ -475,7 +475,7 @@ PASS: TestWorkerDrainPersistsActiveCompletionBeforeReturning
 PASS: TestWorkerForcedDrainIsBoundedAndLeaseRecovers
 ```
 
-The cancellation interrupt installs the ordinary SMTP deadline before the cancellation callback, so a concurrently canceled context cannot have its immediate deadline overwritten. Signal-driven clean drain retains an uncanceled attempt context through SMTP and fenced completion; only grace expiry cancels it. Genuine completion errors remain errors even when their value is `context.Canceled`, and an already-reaped admin listener is not passed to a potentially blocking `Shutdown` call.
+The cancellation interrupt installs the ordinary SMTP deadline before the cancellation callback, so a concurrently canceled context cannot have its immediate deadline overwritten. Signal-driven clean drain retains an uncanceled attempt context through SMTP and fenced completion; only grace expiry cancels it. An already-reaped admin listener is not passed to a potentially blocking `Shutdown` call. Independent review later found that the initial implementation still replaced a completion error when grace expiry and completion failure occurred together; the focused follow-up below closes that boundary.
 
 ## FAIL then PASS — final claim and notification-page plans
 
@@ -553,3 +553,45 @@ PASS: durable SENT detail matches the current Mailpit Message-ID and attempt
 PASS: authoritative Compose verification completed
 PASS: Compose cleanup removed all project containers, networks, and volumes
 ```
+
+## FAIL then PASS — forced-grace error provenance follow-up
+
+Commands:
+
+```bash
+go test ./internal/notifications ./cmd/worker \
+  -run '^(TestWorkerRunUntilStoppedPreservesCompletionErrorAtForcedCancellation|TestWorkerRunUntilStoppedPreservesSendErrorAtForcedCancellation|TestServeWorkerJoinsGraceDeadlineWithCompletionError)$' \
+  -count=1 -v
+go test ./internal/notifications \
+  -run '^TestWorkerRunUntilStoppedPreservesSendAndCompletionErrorsWhenCompletionObservesCancellation$' \
+  -count=1 -v
+go test -race ./internal/notifications ./cmd/worker \
+  -run '^(TestWorkerRunUntilStopped|TestServeWorker)' -count=20
+```
+
+RED evidence:
+
+```text
+completion error was masked: got context canceled want database completion failed
+completion error was masked: got context canceled want database completion failed: context canceled
+send error was masked: got context canceled want SMTP send failed during cancellation
+error=worker shutdown grace period expired: context deadline exceeded
+    notification worker: context canceled want deadline and database completion failed
+error=context canceled want send=SMTP send failed completion=context canceled
+```
+
+GREEN evidence:
+
+```text
+PASS: TestWorkerRunUntilStoppedPreservesCompletionErrorAtForcedCancellation/sentinel
+PASS: TestWorkerRunUntilStoppedPreservesCompletionErrorAtForcedCancellation/wrapped_context_canceled
+PASS: TestWorkerRunUntilStoppedPreservesCompletionErrorAtForcedCancellation/context_canceled
+PASS: TestWorkerRunUntilStoppedPreservesSendErrorAtForcedCancellation
+PASS: TestWorkerRunUntilStoppedPreservesSendAndCompletionErrorsWhenCompletionObservesCancellation
+PASS: TestServeWorkerJoinsGraceDeadlineWithCompletionError/sentinel
+PASS: TestServeWorkerJoinsGraceDeadlineWithCompletionError/wrapped_context_canceled
+PASS: TestServeWorkerJoinsGraceDeadlineWithCompletionError/context_canceled
+PASS: lifecycle/coordinator focused suite under race detector, 20 repetitions
+```
+
+`RunUntilStopped` now gives a non-nil operation result precedence over context state sampled after the operation. `processBatch` likewise preserves a sender error observed with cancellation and joins sender plus completion errors when completion observes cancellation. At the coordinator boundary, forced shutdown therefore retains both `context.DeadlineExceeded` and the exact completion sentinel through `errors.Is`.

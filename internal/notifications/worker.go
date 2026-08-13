@@ -53,14 +53,14 @@ func (worker *Worker) RunUntilStopped(claimCtx, attemptCtx context.Context) erro
 		select {
 		case <-timer.C:
 			processed, err := worker.processBatch(claimCtx, attemptCtx)
-			if attemptCtx.Err() != nil {
-				return attemptCtx.Err()
-			}
 			if err != nil {
-				if claimCtx.Err() != nil {
+				if claimCtx.Err() != nil || attemptCtx.Err() != nil {
 					return err
 				}
 				worker.logger.Error("notification batch failed", "error", err)
+			}
+			if attemptCtx.Err() != nil {
+				return attemptCtx.Err()
 			}
 			if claimCtx.Err() != nil {
 				return nil
@@ -102,6 +102,9 @@ func (worker *Worker) processBatch(claimCtx, attemptCtx context.Context) (int, e
 			sendErr = worker.sender.Send(attemptCtx, message)
 		}
 		if attemptCtx.Err() != nil {
+			if sendErr != nil {
+				return processed, sendErr
+			}
 			return processed, attemptCtx.Err()
 		}
 		completion := Completion{DeliveryID: delivery.ID, WorkerID: worker.config.WorkerID, LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount}
@@ -117,6 +120,9 @@ func (worker *Worker) processBatch(claimCtx, attemptCtx context.Context) (int, e
 			completion.RetryAfter = RetryDelay(worker.config.BackoffBase, worker.config.BackoffMax, delivery.CycleAttemptCount, worker.config.Random())
 		}
 		if err = worker.queue.Complete(attemptCtx, completion); err != nil {
+			if sendErr != nil && attemptCtx.Err() != nil {
+				return processed, errors.Join(sendErr, err)
+			}
 			return processed, err
 		}
 		processed++

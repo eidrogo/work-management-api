@@ -83,8 +83,9 @@ Resolved during hardening:
 - notification claims and page ordering defeated their intended indexes; bounded per-state claim selection and qualified list boundaries now have large default-planner plan regressions;
 - persisted titles could form invalid or overlong SMTP Subject headers; single-line validation, zero-side-effect HTTP evidence, bounded subject rendering, and SMTP defense in depth close the gap;
 - persisted worker IDs were not validated against their 255-character columns; one UTF-8/rune/control contract now gates startup, worker construction, and claim storage.
+- forced grace cancellation could replace a genuine sender/database completion error with `context.Canceled`; operation errors now take precedence over sampled context state, send/completion errors are joined when completion observes cancellation, and the coordinator retains both the grace deadline and worker error.
 
-No additional in-scope findings were identified during self-review; focused and clean-Compose candidate evidence is recorded in [`verification.md`](verification.md), and the required post-commit authority is captured in the external final fix report. The accepted debt above remains deliberate and prevents a production-readiness claim.
+No additional in-scope findings were identified after the independent follow-up and focused correction; candidate evidence is recorded in [`verification.md`](verification.md), and required post-commit authority is captured in the external final fix reports. The accepted debt above remains deliberate and prevents a production-readiness claim.
 
 ## 11. Verification evidence
 

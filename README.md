@@ -280,7 +280,7 @@ Work-item titles are single-line values of at most 200 Unicode code points. The 
 - **Worker concurrency:** multiple workers cannot claim the same row at the same time under normal PostgreSQL semantics; a worker never reserves later rows while sending its current row.
 - **Completion fencing:** stale owners, tokens, attempts, and expired leases cannot complete a delivery.
 - **Clock source:** PostgreSQL controls every persisted queue eligibility, lease, retry, completion, abandonment, and replay timestamp.
-- **Graceful worker shutdown:** a signal stops new claims immediately, shuts down the admin listener concurrently, and gives the active SMTP attempt plus fenced database completion the configured `SHUTDOWN_TIMEOUT`. Expiry force-cancels the attempt, closes the admin listener, waits for both goroutines, and leaves any claimed row recoverable after its lease.
+- **Graceful worker shutdown:** a signal stops new claims immediately, shuts down the admin listener concurrently, and gives the active SMTP attempt plus fenced database completion the configured `SHUTDOWN_TIMEOUT`. Expiry force-cancels the attempt, closes the admin listener, waits for both goroutines, and leaves any claimed row recoverable after its lease. If cancellation intersects an unhandled operation failure, the exit error retains both the grace deadline and the sender/completion failure.
 - **Delivery semantics:** at least once.
 - **`SENT`:** the SMTP server accepted the completed message transaction.
 - **Not guaranteed:** inbox delivery, bounce-free delivery, opens, exactly once.
