@@ -681,6 +681,12 @@ Raw HTTP/1.1 permits `obs-text` bytes in header values. A manager request with b
 
 Persisted JSON text validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization. The separate idempotency-key rule rejects malformed byte sequences but keeps valid Unicode.
 
+## FAIL then PASS — package-manager-free scratch runtime
+
+The final scan found that the digest-pinned Debian runtime still resolved unversioned `ca-certificates` and `curl` packages during every build. The replacement uses an exact three-stage graph: a tag-and-digest-pinned Go toolchain, an internal build stage, and a final `scratch` stage. It copies only the toolchain CA bundle, six `CGO_ENABLED=0` repository commands, and tracked migrations; it runs as numeric `65532:65532`. A bounded static probe accepts only numeric loopback endpoints, issues one exact `GET /health/ready` without proxies or redirects, caps headers/body/time, and requires HTTP 200.
+
+Except for the `go.sum`-locked module graph, regression gates reject package managers, unlocked downloaders, VCS fetches, extra/external stages, remote ADD/external COPY, unexpected runtime instructions, incomplete command sets, named/root users, and unpinned toolchains. The actual-image inspection reads image layers rather than Docker-injected container mount paths, exact-compares the runtime filesystem, and compares every migration byte-for-byte with the tracked source. Direct `docker-build`, CI, `make up`, and Compose smoke enforce the source gate and actual-image inspection. Failure injection proves local `make up` does not create or replace Compose resources before that inspection succeeds; clean Compose startup proves migrate, seed, API, worker, and both readiness probes.
+
 ## FAIL then PASS — bounded SMTP peer input and immutable Docker frontend
 
 Provenance: sealed Standard security scan `e85bce0a-eb40-4d20-bb52-762979bc126d` reported both findings against clean `7b7b53e09d444ce27ad8e69cbbf7326f175579b2`. The remediation logs are under `/tmp/work-management-api-security-fix-evidence/`: `smtp-red.txt`, `smtp-quit-red.txt`, `smtp-final-audit-red.txt`, `smtp-final-audit-green.txt`, `smtp-final-audit-race-green.txt`, `dockerfile-syntax-red.txt`, and `dockerfile-syntax-mutations-green.txt`.

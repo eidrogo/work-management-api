@@ -1,20 +1,22 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
-FROM golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd AS build
+FROM golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd AS toolchain
+
+FROM toolchain AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY . .
 RUN set -e; CGO_ENABLED=0 go test ./... && mkdir -p /out && \
-    for command in api worker migrate seed replay-notification; do \
+    for command in api worker migrate seed replay-notification healthcheck; do \
       CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "/out/${command}" "./cmd/${command}"; \
     done
 
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && \
-    groupadd --system app && useradd --system --gid app --home-dir /app app
+FROM scratch AS runtime
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
-COPY --from=build /out/ /app/
-COPY migrations/ /app/migrations/
-USER app
+COPY --from=toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build --chown=65532:65532 /out/ /app/
+COPY --chown=65532:65532 migrations/ /app/migrations/
+USER 65532:65532
 EXPOSE 8080 9090 9091
 ENTRYPOINT ["/app/api"]

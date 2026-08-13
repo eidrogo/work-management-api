@@ -187,6 +187,7 @@ cmd/worker                          Notification worker process
 cmd/migrate                         Versioned migration command
 cmd/seed                            Deterministic seed command
 cmd/replay-notification             Operational failed-delivery replay
+cmd/healthcheck                     Container-local bounded readiness probe
 internal/auth                       Principal roles and token resolver
 internal/apiadmin                   API liveness/readiness/metrics listener
 internal/config                     Validated environment configuration
@@ -299,6 +300,7 @@ Mailpit proves real SMTP transport behavior and local server acceptance. It does
 - Docker Compose v2
 - `curl`
 - `jq`
+- `git`, `python3`, `ps`, `tar`, `file`, `diff`, and `cmp` for fail-closed verification gates
 
 ### Direct Go workflow
 
@@ -563,13 +565,13 @@ export TEST_DATABASE_URL='postgres://work:work@127.0.0.1:5432/work_management?ss
 make test-db test-db-race
 ```
 
-Authoritative local verification requires Docker Engine/Compose, Go, `curl`, `jq`, `git`, and `golangci-lint`:
+Authoritative local verification requires Docker Engine/Compose, Go, `curl`, `jq`, `git`, `python3`, `ps`, `tar`, `file`, `diff`, `cmp`, and `golangci-lint`:
 
 ```bash
 make verify-full
 ```
 
-`make verify-full` runs the static, lint, command-build, OpenAPI, secret, Dockerfile-frontend-pin, rendered-Compose, and image-build gates. The offline Dockerfile gate mutation-tests all supported tracked naming forms and rejects mutable, misplaced, or duplicate syntax directives. Verification then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
+`make verify-full` runs the static, lint, command-build, OpenAPI, secret, Dockerfile-frontend-pin, scratch-runtime-policy, rendered-Compose, and actual-image gates. The offline Dockerfile gates mutation-test frontend naming and an exact three-stage graph: one tag-and-digest-pinned Go toolchain, its internal build stage, and a final scratch runtime. The only allowed build-time network resolution is the module graph locked by `go.sum`; package-manager commands, remote `ADD`, external `COPY`, VCS fetches, and unlocked downloader inputs are rejected. Actual image layers must contain only six static repository-built commands, byte-identical tracked migrations, and the CA bundle copied from that pinned toolchain. A failure-injection gate proves `make up` inspects the new image before changing either a fresh or already-running Compose project. Verification then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, uses the bounded repository-built numeric-loopback readiness probe for API and worker, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
 
 The same Compose authority is available without the surrounding static gates:
 
@@ -630,7 +632,7 @@ Implemented:
 - no committed real secret;
 - safe client error messages;
 - immutable creator/completed rows and append-only histories;
-- pinned Go version, Docker image tags, and digest-pinned Dockerfile syntax frontend;
+- pinned Go version, digest-pinned builder/Compose images and Dockerfile frontend, plus a package-manager-free scratch runtime containing only static commands, tracked migrations, and the pinned-toolchain CA bundle;
 - separate loopback-default administrative listeners and IPv4-loopback-only Compose publications;
 - finite HTTP metric method/route labels and a fixed retained-series cap;
 - secret-pattern check.
@@ -645,7 +647,9 @@ docker buildx imagetools inspect --raw "docker/dockerfile:1.7@$candidate" |
   jq -e '.manifests | type == "array" and length > 0 and all(.[]; .digest | startswith("sha256:"))'
 ```
 
-Review the returned platform manifest set, update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test docker-build`. Never replace the digest with a mutable tag-only directive.
+Review the returned platform manifest set, update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test runtime-dockerfile-test docker-build`. Never replace the digest with a mutable tag-only directive or add package-manager, unlocked downloader, or VCS resolution to the build; the sole allowed network resolution is the `go.sum`-locked module graph.
+
+A verified builder tag/digest refresh must update the matching exact instruction in `scripts/check-runtime-dockerfile.sh` in the same change; the mutation and actual-image gates then prove the intended graph and payload again.
 
 Before production:
 

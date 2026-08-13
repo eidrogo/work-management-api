@@ -161,6 +161,8 @@ If a fixed local port is occupied, change only the relevant host variable in `.e
 
 Common checks:
 
+- **Container healthcheck fails:** run `/app/healthcheck 127.0.0.1:<admin-port>` inside the container. It intentionally rejects DNS names, non-loopback addresses, redirects, proxies, non-200 readiness, oversized responses, and timeouts. The public listener is never probed.
+
 - **API or worker never becomes ready:** inspect the migrate/seed exit code and PostgreSQL health before application logs.
 - **Assignment commits but no mail appears:** inspect notification state/attempts, worker logs, Mailpit `/api/v1/info`, and the worker admin metrics; do not infer inbox delivery.
 - **Repeated `CONCURRENT_MODIFICATION`:** confirm the client sends the latest ETag value in `If-Match` rather than blindly retrying.

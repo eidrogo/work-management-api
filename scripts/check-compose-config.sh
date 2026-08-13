@@ -11,6 +11,8 @@ jq -e '
   ([.services.worker.ports[].target] | sort) == [9091] and
   .services.api.environment.API_ADMIN_ADDR == ":9090" and
   .services.worker.environment.WORKER_HTTP_ADDR == ":9091" and
-  .services.api.healthcheck.test[-1] == "http://127.0.0.1:9090/health/ready" and
-  .services.worker.healthcheck.test[-1] == "http://127.0.0.1:9091/health/ready"
+  .services.api.healthcheck.test == ["CMD", "/app/healthcheck", "127.0.0.1:9090"] and
+  .services.worker.healthcheck.test == ["CMD", "/app/healthcheck", "127.0.0.1:9091"] and
+  .services.api.healthcheck.timeout == "3s" and
+  .services.worker.healthcheck.timeout == "3s"
 ' <<<"$rendered" >/dev/null

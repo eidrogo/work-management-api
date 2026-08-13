@@ -39,6 +39,8 @@ hardening is additive and must not rewrite it.
 
 1. Modernize Go, pgx, Docker, Compose, CI actions, lint configuration, and
    dependency update policy.
+   The final runtime is package-manager-free `scratch`; repository gates require
+   the exact pinned-toolchain build graph and inspect the actual image contents.
 2. Add tests first for database behavior, notification claims and fencing,
    replay attribution, error redaction, idempotency snapshots, and indexes;
    implement the minimum changes needed to pass them.

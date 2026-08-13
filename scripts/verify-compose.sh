@@ -214,7 +214,18 @@ if [[ "${VERIFY_COMPOSE_INJECT_FAILURE:-}" == "after-tests" ]]; then
 	exit 98
 fi
 
-run_owned_child - "${compose[@]}" up --build --detach --wait --wait-timeout 180
+run_owned_child - "${compose[@]}" build
+app_image_ref="$(docker image ls -q --no-trunc --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter 'label=com.docker.compose.service=api')"
+app_image_count="$(printf '%s\n' "$app_image_ref" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+if [[ "$app_image_count" != "1" ]] || [[ ! "$app_image_ref" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+	echo "Could not resolve exactly one built application image reference: $app_image_ref" >&2
+	exit 1
+fi
+app_image="$(docker image inspect --format '{{.Id}}' "$app_image_ref")"
+[[ "$app_image" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Built application image has an invalid ID: $app_image" >&2; exit 1; }
+./scripts/check-runtime-image.sh "$app_image"
+echo "PASS: Compose application image matches the scratch runtime allowlist"
+run_owned_child - "${compose[@]}" up --no-build --detach --wait --wait-timeout 180
 
 assert_completed_service() {
 	local service=$1 container state
