@@ -38,6 +38,9 @@ trap cleanup EXIT
 
 cat >"$temporary/docker" <<SCRIPT
 #!/usr/bin/env bash
+if [[ "\${1:-}" == image && "\${2:-}" == ls && " \$* " == *' label=com.docker.compose.project='* && " \$* " == *' label=com.docker.compose.service=api '* ]]; then
+  exit 0
+fi
 if [[ "\${1:-}" == image && "\${2:-}" == inspect && "\${3:-}" != --format ]]; then
   echo 'injected runtime image inspection failure' >&2
   exit 86

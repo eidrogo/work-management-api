@@ -81,10 +81,7 @@ worker:
 up: dockerfile-syntax-check runtime-dockerfile-check
 	docker compose build
 	@set -Eeuo pipefail; \
-	project="$$(docker compose config --format json | jq -er '.name')"; \
-	image_ref="$$(docker image ls -q --no-trunc --filter "label=com.docker.compose.project=$$project" --filter 'label=com.docker.compose.service=api')"; \
-	count="$$(printf '%s\n' "$$image_ref" | sed '/^[[:space:]]*$$/d' | wc -l | tr -d '[:space:]')"; \
-	if [[ "$$count" != "1" ]] || [[ ! "$$image_ref" =~ ^sha256:[0-9a-f]{64}$$ ]]; then echo "Could not resolve exactly one built application image reference: $$image_ref" >&2; exit 1; fi; \
+	image_ref="$$(docker compose config --format json | jq -er '.services.api.image | select(type == "string" and length > 0)')"; \
 	image="$$(docker image inspect --format '{{.Id}}' "$$image_ref")"; \
 	if [[ ! "$$image" =~ ^sha256:[0-9a-f]{64}$$ ]]; then echo "Built application image has an invalid ID: $$image" >&2; exit 1; fi; \
 	./scripts/check-runtime-image.sh "$$image"; \

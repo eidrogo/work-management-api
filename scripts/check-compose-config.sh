@@ -10,6 +10,8 @@ jq -e '
   ([.services.api.ports[].target] | sort) == [8080, 9090] and
   ([.services.worker.ports[].target] | sort) == [9091] and
   .services.api.environment.API_ADMIN_ADDR == ":9090" and
+  .services.api.image == (.name + "-api") and
+  .services.api.pull_policy == "build" and
   .services.worker.environment.WORKER_HTTP_ADDR == ":9091" and
   .services.api.healthcheck.test == ["CMD", "/app/healthcheck", "127.0.0.1:9090"] and
   .services.worker.healthcheck.test == ["CMD", "/app/healthcheck", "127.0.0.1:9091"] and
