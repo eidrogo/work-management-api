@@ -757,4 +757,43 @@ send error=The email service returned an unexpected response. credentials observ
 PASS: corrected test killed the exact outer-wrapper mutation before AUTH credentials were observed
 ```
 
-The absolute `localhost.` logical name exercises the unchanged production resolver/dial/TLS path but is not in `net/smtp`'s exact localhost exemption. `TLSServerName` remains `localhost` for certificate identity, and no production-only test seam or global dial hook was added.
+The absolute `localhost.` logical name killed the mutation on the networked macOS/Linux environments first tested, but later offline Linux verification found that it still depended on DNS when `/etc/hosts` contained only `localhost`. The DNS-free portability correction below supersedes that intermediate test input. `TLSServerName` remains `localhost` for certificate identity, and no production-only test seam or global dial hook was added.
+
+## FAIL then PASS — DNS-free implicit-TLS mutation-gate portability
+
+Provenance: a second independent review of clean `9d36c4ae63373e14a9f1a4d2da35f0168fe0d061` ran the exact Linux/arm64 test binary in Ubuntu/Debian with Docker `--network none`. The `localhost.` test failed before TLS because the container hosts file had `localhost` without the trailing dot and no DNS was reachable. Follow-up evidence is under `/tmp/work-management-api-security-fix3-evidence/`.
+
+Focused commands:
+
+```bash
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+  go test -c -o /tmp/wma-email-test-linux-arm64 ./internal/platform/email
+docker run --rm --network none --platform linux/arm64 \
+  -v /tmp/wma-email-test-linux-arm64:/wma-email-test:ro \
+  ubuntu:24.04 /wma-email-test \
+  -test.v -test.run '^TestSMTPClientNegotiatesImplicitTLS$' -test.count=20
+
+go test ./internal/platform/email \
+  -run '^TestSMTPClientNegotiatesImplicitTLS$' -count=20
+go test -race ./internal/platform/email \
+  -run '^TestSMTPClientNegotiatesImplicitTLS$' -count=20
+```
+
+RED evidence on `9d36c4a`:
+
+```text
+/etc/hosts: 127.0.0.1 localhost; ::1 localhost ip6-localhost ip6-loopback
+Host localhost. with --network none:
+send error=The email service could not be reached. credentials observed=false
+```
+
+GREEN evidence after replacing only the test logical Host with the numeric IPv4-mapped IPv6 literal `::ffff:127.0.0.1`:
+
+```text
+PASS: current code, 20 local normal and 20 local race repetitions
+PASS: current Linux/arm64 binary, 20 repetitions each in Ubuntu 24.04 and Debian bookworm-slim with Docker --network none
+PASS: exact outer-wrapper mutation fails locally before AUTH, credentials observed=false
+PASS: exact outer-wrapper mutation fails in Ubuntu and Debian Linux/arm64 --network none before AUTH, credentials observed=false
+```
+
+`::ffff:127.0.0.1` requires no resolver, reaches the real IPv4 loopback listener on the supported macOS and Linux environments, and is not one of `net/smtp.PlainAuth`'s exact plaintext exemptions (`localhost`, `127.0.0.1`, `::1`). The test therefore remains a real production-path oracle for the concrete implicit `*tls.Conn` invariant without external DNS, `/etc/hosts` changes, a production dial seam, or a global test hook.

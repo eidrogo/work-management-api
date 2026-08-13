@@ -275,7 +275,7 @@ func TestSMTPClientNegotiatesImplicitTLS(t *testing.T) {
 	defer server.Close()
 	_, port := server.Address(t)
 	client, err := NewSMTP(Config{
-		Host: "localhost.", Port: port, From: "work@example.test",
+		Host: "::ffff:127.0.0.1", Port: port, From: "work@example.test",
 		Username: "smtp-user", Password: "smtp-password", TLSMode: TLSImplicit,
 		TLSServerName: "localhost", TLSInsecureSkipVerify: true, Timeout: 2 * time.Second,
 	})
