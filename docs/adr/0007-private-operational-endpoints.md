@@ -33,3 +33,8 @@ Scrape only the API and worker administrative listeners. Alert on `work_manageme
 ## Revisit when
 
 An authenticated operational proxy or service mesh is available, cross-instance aggregation is required, or richer histogram behavior justifies a maintained metrics client.
+
+## Related decisions
+
+- [ADR 0001: Modular monolith with separate API and worker processes](0001-modular-monolith.md)
+- [ADR 0002: PostgreSQL transactional outbox](0002-transactional-outbox.md)

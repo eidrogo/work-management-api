@@ -54,12 +54,22 @@ func ErrorContract(err error) (string, string, map[string]any) {
 		return "RESOURCE_NOT_FOUND", "The requested resource was not found.", nil
 	case errors.Is(err, ErrInvalidInput):
 		return "INVALID_INPUT", "The request contains invalid input.", nil
+	case errors.Is(err, ErrIdempotencyKeyRequired):
+		return "IDEMPOTENCY_KEY_REQUIRED", "An Idempotency-Key header is required.", nil
+	case errors.Is(err, ErrExpectedVersionRequired):
+		return "EXPECTED_VERSION_REQUIRED", "A positive expected version is required.", nil
 	case errors.Is(err, ErrInvalidTransition):
 		return "WORK_ITEM_INVALID_TRANSITION", "The requested work-item transition is not allowed.", nil
 	case errors.Is(err, ErrAssignmentConflict):
 		return "ASSIGNMENT_CONFLICT", "The work item cannot be assigned in its current state.", nil
 	case errors.Is(err, ErrConcurrentModification):
 		return "CONCURRENT_MODIFICATION", "The work item changed after it was read.", nil
+	case errors.Is(err, ErrAssigneeMustBeWorker):
+		return "ASSIGNEE_MUST_BE_WORKER", "The assignee must reference an existing worker.", nil
+	case errors.Is(err, ErrReassignmentReasonRequired):
+		return "REASSIGNMENT_REASON_REQUIRED", "A reason is required when the assignee changes.", nil
+	case errors.Is(err, ErrCompletedImmutable):
+		return "WORK_ITEM_COMPLETED_IMMUTABLE", "Completed work cannot be changed.", nil
 	case errors.Is(err, ErrIdempotencyKeyReused):
 		return "IDEMPOTENCY_KEY_REUSED", "The idempotency key was already used with a different request.", nil
 	default:

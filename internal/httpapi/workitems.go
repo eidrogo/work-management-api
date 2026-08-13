@@ -181,6 +181,9 @@ func (server *Server) transitionWorkItem(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	w.Header().Set("ETag", quoteETag(result.Item.Version))
+	if result.Idempotent {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
 	if server.metrics != nil {
 		operation := "complete"
 		if start {

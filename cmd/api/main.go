@@ -80,17 +80,9 @@ func run() error {
 	errorLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
 	publicServer := &http.Server{Addr: cfg.HTTPAddress, Handler: publicHandler, ReadHeaderTimeout: cfg.ReadHeaderTimeout, ReadTimeout: cfg.ReadTimeout, WriteTimeout: cfg.WriteTimeout, IdleTimeout: cfg.IdleTimeout, ErrorLog: errorLog}
 	adminServer := &http.Server{Addr: cfg.AdminHTTPAddress, Handler: adminHandler, ReadHeaderTimeout: cfg.ReadHeaderTimeout, ReadTimeout: cfg.ReadTimeout, WriteTimeout: cfg.WriteTimeout, IdleTimeout: cfg.IdleTimeout, ErrorLog: errorLog}
-	publicListener, err := net.Listen("tcp", cfg.HTTPAddress)
+	publicListener, adminListener, err := bindEndpoints(cfg.HTTPAddress, cfg.AdminHTTPAddress)
 	if err != nil {
-		return fmt.Errorf("bind public API listener: %w", err)
-	}
-	adminListener, err := net.Listen("tcp", cfg.AdminHTTPAddress)
-	if err != nil {
-		bindErr := fmt.Errorf("bind API admin listener: %w", err)
-		if closeErr := publicListener.Close(); closeErr != nil {
-			return errors.Join(bindErr, fmt.Errorf("close public API listener after admin bind failure: %w", closeErr))
-		}
-		return bindErr
+		return err
 	}
 	logger.Info("api public listener bound", "configured_address", cfg.HTTPAddress, "resolved_address", publicListener.Addr().String())
 	logger.Info("api admin listener bound", "configured_address", cfg.AdminHTTPAddress, "resolved_address", adminListener.Addr().String())
@@ -98,6 +90,22 @@ func run() error {
 		serverEndpoint{name: "public API", server: publicServer, listener: publicListener},
 		serverEndpoint{name: "API admin", server: adminServer, listener: adminListener},
 	)
+}
+
+func bindEndpoints(publicAddress, adminAddress string) (net.Listener, net.Listener, error) {
+	publicListener, err := net.Listen("tcp", publicAddress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bind public API listener: %w", err)
+	}
+	adminListener, err := net.Listen("tcp", adminAddress)
+	if err != nil {
+		bindErr := fmt.Errorf("bind API admin listener: %w", err)
+		if closeErr := publicListener.Close(); closeErr != nil {
+			return nil, nil, errors.Join(bindErr, fmt.Errorf("close public API listener after admin bind failure: %w", closeErr))
+		}
+		return nil, nil, bindErr
+	}
+	return publicListener, adminListener, nil
 }
 
 func serveEndpoints(ctx context.Context, shutdownTimeout time.Duration, endpoints ...serverEndpoint) error {

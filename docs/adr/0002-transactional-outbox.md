@@ -36,3 +36,8 @@ Monitor pending count, oldest pending age, terminal failures, safe failure codes
 ## Revisit when
 
 Queue volume materially burdens PostgreSQL or a provider offers idempotent sends and signed delivery webhooks.
+
+## Related decisions
+
+- [ADR 0001: Modular monolith with separate API and worker processes](0001-modular-monolith.md)
+- [ADR 0007: Private operational endpoints and bounded metrics](0007-private-operational-endpoints.md)

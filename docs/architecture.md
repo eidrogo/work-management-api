@@ -5,44 +5,51 @@
 ```mermaid
 flowchart LR
     Client[Manager / Worker / Future Client]
-    Public[API public listener<br/>HTTP_ADDR]
+    Public[API public listener<br/>HTTP_ADDR<br/>authenticated /v1 only]
     APIAdmin[API admin listener<br/>API_ADMIN_ADDR]
-    Operator[Local orchestrator / private scraper]
-    Auth[Development Token Resolver<br/>replaceable identity boundary]
-    Domain[Work-item Application Service<br/>authorization + lifecycle]
-    PG[(PostgreSQL<br/>system of record)]
+    Operator[Private scraper / operator]
+    Auth[Development token resolver<br/>replaceable identity boundary]
+    Work[Work-item service<br/>authorization + lifecycle]
+    Notify[Notification service<br/>inspection + replay]
+    PG[(PostgreSQL<br/>system of record + clock)]
+    Items[(work_items<br/>current state)]
+    Idem[(idempotency_keys<br/>immutable response snapshot)]
     Events[(work_item_events<br/>append-only)]
-    Outbox[(notification_deliveries<br/>durable outbox)]
-    Worker[Notification Worker<br/>cmd/worker]
+    Outbox[(notification_deliveries<br/>current outbox state)]
     Attempts[(notification_attempts<br/>append-only)]
-    SMTP[SMTP Server / Provider]
-    Mailpit[Mailpit local sink]
-    APIMetrics[API process metrics]
+    Replays[(notification_replay_events<br/>append-only)]
+    Worker[Notification worker<br/>cmd/worker]
+    SMTP[SMTP server / provider]
+    Mailpit[Mailpit local SMTP sink]
     WorkerAdmin[Worker admin listener<br/>WORKER_HTTP_ADDR]
-    WorkerMetrics[Worker process metrics]
-    Ops[Logs / replay command]
+    Ops[JSON logs / replay CLI]
 
-    Client -->|Bearer token + JSON /v1| Public
+    Client -->|Bearer + JSON| Public
     Public --> Auth
-    Public --> Domain
-    Domain -->|explicit transaction| PG
+    Public --> Work
+    Public --> Notify
+    Work -->|explicit transactions| PG
+    Notify -->|manager reads / attributed replay| PG
+    PG --- Items
+    PG --- Idem
     PG --- Events
     PG --- Outbox
-    Worker -->|SKIP LOCKED lease| Outbox
-    Worker -->|SMTP| SMTP
-    SMTP -. local .-> Mailpit
-    Worker --> Attempts
+    PG --- Attempts
+    PG --- Replays
+    Worker -->|claim one due row| PG
+    Worker -->|SMTP transaction| SMTP
+    SMTP -. local only .-> Mailpit
     Operator --> APIAdmin
     Operator --> WorkerAdmin
-    APIAdmin --> APIMetrics
-    WorkerAdmin --> WorkerMetrics
-    APIAdmin -->|readiness + cached backlog| PG
-    WorkerAdmin -->|readiness + cached backlog| PG
+    APIAdmin -->|readiness + five-second backlog cache| PG
+    WorkerAdmin -->|readiness + five-second backlog cache| PG
     Public --> Ops
     Worker --> Ops
 ```
 
-The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release artifact, and operational conventions. The API process pre-binds its public and administrative sockets before serving and drains both concurrently under one shutdown budget. Direct execution uses loopback defaults for both administrative listeners. Compose uses wildcard binds inside each container so port forwarding works, but publishes every host port only on `127.0.0.1`. Health and metrics remain unauthenticated and therefore require a private network boundary outside local development.
+The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both servers drain concurrently under one shutdown budget.
+
+Direct execution uses loopback defaults for the two administrative listeners. Compose uses wildcard binds inside the containers so forwarding works, while publishing every host port explicitly on `127.0.0.1`. Administrative health and metrics routes are unauthenticated, are absent from the public OpenAPI document, and need a private network boundary outside local development.
 
 ## Assignment and notification sequence
 
@@ -50,57 +57,60 @@ The API and worker are independently runnable processes but share one module, do
 sequenceDiagram
     autonumber
     actor Manager
-    participant API as HTTP API
-    participant Auth as Authenticator
-    participant Domain as Work-item Service
+    participant API as Public HTTP API
+    participant Domain as Work-item service
     participant DB as PostgreSQL
-    participant Worker as Notification Worker
-    participant SMTP as SMTP Server / Provider
+    participant Worker as Notification worker
+    participant SMTP as SMTP server
 
     Manager->>API: PUT /v1/work-items/{id}/assignment<br/>Bearer + If-Match
-    API->>Auth: Resolve token hash
-    Auth->>DB: Read principal
-    DB-->>Auth: Manager principal
-    API->>Domain: Assign(actor, assignee, expected version)
+    API->>Domain: Assign(authenticated actor, assignee, version)
     Domain->>DB: BEGIN
-    Domain->>DB: Read work item and assignee
+    Domain->>DB: Load item and assignee
     Domain->>Domain: Authorize + validate lifecycle
-    Domain->>DB: Conditional work-item UPDATE
-    Domain->>DB: INSERT assignment history event
-    Domain->>DB: INSERT PENDING delivery (unique dedup key)
+    Domain->>DB: Conditional work_items UPDATE
+    Domain->>DB: INSERT append-only assignment event
+    Domain->>DB: INSERT unique PENDING delivery + stable Message-ID
     Domain->>DB: COMMIT
-    DB-->>Domain: Updated item
-    Domain-->>API: 200 + ETag
-    API-->>Manager: Assignment committed
+    Domain-->>API: current item
+    API-->>Manager: 200 + ETag
 
-    loop Poll due work
-        Worker->>DB: SELECT ... FOR UPDATE SKIP LOCKED
-        DB-->>Worker: Leased delivery
-        Worker->>SMTP: MAIL / RCPT / DATA
-        alt SMTP accepts DATA
+    loop Up to the configured per-poll send limit
+        Worker->>DB: BEGIN; select one due row<br/>FOR UPDATE SKIP LOCKED using clock_timestamp()
+        Worker->>DB: Set owner + fresh DB UUID token<br/>attempt + lease expiry; COMMIT
+        Worker->>SMTP: EHLO / optional TLS + AUTH / MAIL / RCPT / DATA
+        alt SMTP rejects or transport fails
+            SMTP-->>Worker: failure
+            Worker->>DB: Conditional fenced update<br/>safe allowlisted code/message + attempt
+        else SMTP accepts completed DATA
             SMTP-->>Worker: 250 accepted
-            Worker->>DB: Mark SENT + append SENT attempt
-        else Retryable 4xx/network failure
-            SMTP-->>Worker: temporary/ambiguous failure
-            Worker->>DB: Mark PENDING + next_attempt_at<br/>append RETRY_SCHEDULED attempt
-        else Permanent or exhausted
-            SMTP-->>Worker: permanent failure
-            Worker->>DB: Mark FAILED<br/>append FAILED attempt
+            Note over Worker,DB: Crash here can cause a later duplicate
+            Worker->>DB: Mark SENT + append SENT attempt only if<br/>owner, token, attempt and unexpired lease still match
         end
     end
 
-    opt Worker crashes while leased
-        Worker-xSMTP: Process stops
-        Note over DB: Lease expires
-        Worker->>DB: Reclaim row, append ABANDONED attempt
+    opt Worker dies with a live lease
+        Note over DB: PostgreSQL clock reaches lease expiry
+        Worker->>DB: Another worker records ABANDONED<br/>and claims with a fresh token
     end
 ```
 
-## Data ownership
+Assignment never waits for SMTP. The item update, event, and initial outbox row either commit together or all roll back. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`. Generic SMTP is therefore intentionally at least once.
 
-- `work_items` is the current state optimized for operational reads.
-- `work_item_events` is append-only mutation history.
-- `notification_deliveries` is current delivery/lease/retry state.
-- `notification_attempts` is append-only attempt history.
-- Assignment update, assignment event, and initial delivery insert are one database transaction.
-- Email transport never runs inside that transaction.
+Only an allowlisted failure code and fixed generic message are persisted or returned. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
+
+## Idempotency and concurrency ownership
+
+- Create requires an actor/operation/key/request-hash record whose first committed response JSON is immutable. A matching replay returns that snapshot even if related rows later change; key reuse with a different payload fails.
+- Assignment, start, and complete use expected versions. A stale command fails rather than silently overwriting another actor.
+- Same-assignee and same-target-state repeats are deterministic no-ops and do not append duplicate events or deliveries.
+- The worker lease token is an internal database fence. It is deliberately absent from manager API representations.
+- Notification replay is a reasoned operator action: the state change and an append-only replay event commit atomically, with authenticated manager/request attribution over HTTP or a clearly self-asserted operator identity through the database-access CLI. Delivery cycles stop at 10.
+
+## Data and query ownership
+
+- `work_items` is current operational state; creator and completed state are database-protected.
+- `work_item_events`, `notification_attempts`, and `notification_replay_events` are append-only histories.
+- `notification_deliveries` owns current delivery, retry, safe-error, cycle, schedule, and lease state.
+- PostgreSQL `clock_timestamp()` controls due checks, lease validity, completion fencing, recovery, retry, and replay scheduling; process clocks do not decide persisted eligibility.
+- Work-item and notification lists use covered keyset indexes over their documented sort boundaries. History uses item sequence order. The tests traverse pages and inspect the intended index plans rather than relying on offset scans.

@@ -200,34 +200,219 @@ func equalStrings(left, right []string) bool {
 }
 
 func TestOpenAPIContract(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve contract path")
+	document := loadOpenAPIDocument(t)
+	if document["openapi"] != "3.1.0" {
+		t.Fatalf("openapi=%v", document["openapi"])
 	}
-	content, err := os.ReadFile(filepath.Join(filepath.Dir(file), "../../api/openapi.json"))
-	if err != nil {
-		t.Fatal(err)
+
+	wantResponses := map[string]map[string][]string{
+		"/v1/work-items": {
+			"get":  {"200", "400", "401", "403", "500", "503"},
+			"post": {"200", "201", "400", "401", "403", "409", "415", "500", "503"},
+		},
+		"/v1/me/work-items": {"get": {"200", "400", "401", "403", "500", "503"}},
+		"/v1/work-items/{work_item_id}": {
+			"get": {"200", "400", "401", "403", "404", "500", "503"},
+		},
+		"/v1/work-items/{work_item_id}/assignment": {
+			"put": {"200", "400", "401", "403", "404", "409", "415", "422", "500", "503"},
+		},
+		"/v1/work-items/{work_item_id}/start": {
+			"post": {"200", "400", "401", "403", "404", "409", "500", "503"},
+		},
+		"/v1/work-items/{work_item_id}/complete": {
+			"post": {"200", "400", "401", "403", "404", "409", "500", "503"},
+		},
+		"/v1/work-items/{work_item_id}/history": {
+			"get": {"200", "400", "401", "403", "404", "500", "503"},
+		},
+		"/v1/notifications": {
+			"get": {"200", "400", "401", "403", "500", "503"},
+		},
+		"/v1/notifications/{notification_id}": {
+			"get": {"200", "400", "401", "403", "404", "500", "503"},
+		},
+		"/v1/notifications/{notification_id}/replay": {
+			"post": {"202", "400", "401", "403", "404", "409", "415", "500", "503"},
+		},
 	}
-	var document struct {
-		OpenAPI string                                `json:"openapi"`
-		Paths   map[string]map[string]json.RawMessage `json:"paths"`
+	paths := object(t, document, "paths")
+	if !sameStringSet(mapKeys(paths), mapKeys(wantResponses)) {
+		t.Fatalf("public paths=%v want=%v", mapKeys(paths), mapKeys(wantResponses))
 	}
-	if err = json.Unmarshal(content, &document); err != nil {
-		t.Fatal(err)
-	}
-	if document.OpenAPI != "3.1.0" {
-		t.Fatalf("openapi=%q", document.OpenAPI)
-	}
-	for path, methods := range map[string][]string{"/v1/work-items": {"get", "post"}, "/v1/me/work-items": {"get"}, "/v1/notifications": {"get"}} {
-		item, ok := document.Paths[path]
-		if !ok {
-			t.Errorf("missing path %s", path)
-			continue
+	operationIDs := map[string]string{}
+	for path, methods := range wantResponses {
+		pathItem := object(t, paths, path)
+		if got := operationKeys(pathItem); !sameStringSet(got, mapKeys(methods)) {
+			t.Errorf("%s methods=%v want=%v", path, got, mapKeys(methods))
 		}
-		for _, method := range methods {
-			if _, ok := item[method]; !ok {
-				t.Errorf("missing %s %s", method, path)
+		for method, statuses := range methods {
+			operation := object(t, pathItem, method)
+			operationID, _ := operation["operationId"].(string)
+			if strings.TrimSpace(operationID) == "" {
+				t.Errorf("%s %s has blank operationId", strings.ToUpper(method), path)
+			} else if previous, exists := operationIDs[operationID]; exists {
+				t.Errorf("operationId %q is reused by %s and %s %s", operationID, previous, strings.ToUpper(method), path)
+			} else {
+				operationIDs[operationID] = strings.ToUpper(method) + " " + path
+			}
+			if _, overridden := operation["security"]; overridden {
+				t.Errorf("%s %s overrides top-level security", strings.ToUpper(method), path)
+			}
+			responses := object(t, operation, "responses")
+			if got := mapKeys(responses); !sameStringSet(got, statuses) {
+				t.Errorf("%s %s responses=%v want=%v", strings.ToUpper(method), path, got, statuses)
+			}
+			for status, rawResponse := range responses {
+				response := resolveResponse(t, document, rawResponse)
+				if !hasHeader(response, "X-Request-ID") {
+					t.Errorf("%s %s %s omits X-Request-ID", strings.ToUpper(method), path, status)
+				}
+				if status == "401" && !hasHeader(response, "WWW-Authenticate") {
+					t.Errorf("%s %s 401 omits WWW-Authenticate", strings.ToUpper(method), path)
+				}
+				if len(status) == 3 && (status[0] == '4' || status[0] == '5') {
+					content := object(t, response, "content")
+					media := object(t, content, "application/json")
+					schema := object(t, media, "schema")
+					if schema["$ref"] != "#/components/schemas/ErrorEnvelope" {
+						t.Errorf("%s %s %s error schema=%v", strings.ToUpper(method), path, status, schema)
+					}
+				}
 			}
 		}
 	}
+
+	topSecurity, ok := document["security"].([]any)
+	if !ok || len(topSecurity) != 1 {
+		t.Fatalf("security=%v", document["security"])
+	}
+	securityEntry, ok := topSecurity[0].(map[string]any)
+	if !ok || len(securityEntry) != 1 || securityEntry["bearerAuth"] == nil || len(securityEntry["bearerAuth"].([]any)) != 0 {
+		t.Fatalf("security=%v", document["security"])
+	}
+	components := object(t, document, "components")
+	bearer := object(t, object(t, components, "securitySchemes"), "bearerAuth")
+	if bearer["type"] != "http" || bearer["scheme"] != "bearer" {
+		t.Fatalf("bearerAuth=%v", bearer)
+	}
+
+	schemas := object(t, components, "schemas")
+	assertClosedSchema(t, object(t, schemas, "ErrorEnvelope"), []string{"error"}, []string{"error"})
+	assertClosedSchema(t, object(t, schemas, "Error"), []string{"code", "details", "message", "request_id"}, []string{"code", "message", "request_id"})
+
+	for _, required := range []struct{ path, method, status, header string }{
+		{path: "/v1/work-items", method: "post", status: "201", header: "ETag"},
+		{path: "/v1/work-items", method: "post", status: "200", header: "ETag"},
+		{path: "/v1/work-items", method: "post", status: "200", header: "Idempotent-Replayed"},
+		{path: "/v1/work-items/{work_item_id}", method: "get", status: "200", header: "ETag"},
+		{path: "/v1/work-items/{work_item_id}/assignment", method: "put", status: "200", header: "ETag"},
+		{path: "/v1/work-items/{work_item_id}/assignment", method: "put", status: "200", header: "Idempotent-Replayed"},
+		{path: "/v1/work-items/{work_item_id}/start", method: "post", status: "200", header: "ETag"},
+		{path: "/v1/work-items/{work_item_id}/start", method: "post", status: "200", header: "Idempotent-Replayed"},
+		{path: "/v1/work-items/{work_item_id}/complete", method: "post", status: "200", header: "ETag"},
+		{path: "/v1/work-items/{work_item_id}/complete", method: "post", status: "200", header: "Idempotent-Replayed"},
+	} {
+		response := object(t, object(t, object(t, object(t, paths, required.path), required.method), "responses"), required.status)
+		if !hasHeader(response, required.header) {
+			t.Errorf("%s %s %s omits %s", strings.ToUpper(required.method), required.path, required.status, required.header)
+		}
+	}
+	header := object(t, object(t, components, "headers"), "IdempotentReplayed")
+	schema := object(t, header, "schema")
+	if schema["type"] != "string" || !sameStringSet(stringSlice(schema["enum"]), []string{"true"}) {
+		t.Fatalf("IdempotentReplayed schema=%v", schema)
+	}
+}
+
+func resolveResponse(t *testing.T, document map[string]any, raw any) map[string]any {
+	t.Helper()
+	seen := map[string]bool{}
+	for {
+		response, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("response is %T", raw)
+		}
+		ref, _ := response["$ref"].(string)
+		if ref == "" {
+			return response
+		}
+		if seen[ref] {
+			t.Fatalf("cyclic response ref %q", ref)
+		}
+		seen[ref] = true
+		raw = resolveLocalRef(t, document, ref)
+	}
+}
+
+func resolveLocalRef(t *testing.T, document map[string]any, ref string) any {
+	t.Helper()
+	const prefix = "#/"
+	if !strings.HasPrefix(ref, prefix) {
+		t.Fatalf("unsupported non-local ref %q", ref)
+	}
+	var current any = document
+	for _, escaped := range strings.Split(strings.TrimPrefix(ref, prefix), "/") {
+		key := strings.ReplaceAll(strings.ReplaceAll(escaped, "~1", "/"), "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			t.Fatalf("ref %q traverses non-object at %q", ref, key)
+		}
+		current, ok = object[key]
+		if !ok {
+			t.Fatalf("ref %q has missing segment %q", ref, key)
+		}
+	}
+	return current
+}
+
+func assertClosedSchema(t *testing.T, schema map[string]any, properties, required []string) {
+	t.Helper()
+	if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
+		t.Errorf("schema additionalProperties=%v", schema["additionalProperties"])
+	}
+	if got := mapKeys(object(t, schema, "properties")); !sameStringSet(got, properties) {
+		t.Errorf("schema properties=%v want=%v", got, properties)
+	}
+	if got := stringSlice(schema["required"]); !sameStringSet(got, required) {
+		t.Errorf("schema required=%v want=%v", got, required)
+	}
+}
+
+func operationKeys(pathItem map[string]any) []string {
+	var result []string
+	for key := range pathItem {
+		switch key {
+		case "get", "post", "put", "patch", "delete", "options", "head", "trace":
+			result = append(result, key)
+		}
+	}
+	return result
+}
+
+func mapKeys[V any](values map[string]V) []string {
+	result := make([]string, 0, len(values))
+	for key := range values {
+		result = append(result, key)
+	}
+	return result
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		counts[value]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }

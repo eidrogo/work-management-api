@@ -1,6 +1,6 @@
 # Work Management API
 
-A greenfield Go backend that acts as the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email is delivered through a durable PostgreSQL outbox and a real SMTP connection.
+A greenfield Go backend that acts as the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email intent is durable before a worker submits the message to the configured SMTP server. SMTP acceptance is not proof of external inbox delivery.
 
 This is an assessment implementation, not a claim of production readiness. It intentionally concentrates on correctness, explicit invariants, transaction boundaries, failure visibility, operability, and a credible evolution path.
 
@@ -201,10 +201,13 @@ internal/testsupport/postgrestest   Isolated-schema PostgreSQL test harness
 internal/workeradmin                Worker liveness/readiness/metrics
 migrations                          Forward and local rollback SQL
 docs/adr                            Architecture Decision Records
-docs/assessment                     Discovery, ambiguity, alternatives, plan
-docs/operations.md                  Failure modes, alerts, recovery, roadmap
-scripts/demo.sh                     End-to-end reviewer flow
+docs/assessment                     Discovery, alternatives, self-review, evidence
+docs/debrief.md                     Timed technical walkthrough and questions
+docs/operations.md                  Failure modes, runbooks, recovery, roadmap
+scripts/demo.sh                     Exact live lifecycle/SMTP/durable-state proof
+scripts/verify-compose.sh           Authoritative fresh-stack verifier
 compose.yaml                        PostgreSQL + Mailpit + API + worker
+compose.verify.yaml                 Ephemeral loopback verification ports
 ```
 
 ## 10. Data model
@@ -395,7 +398,7 @@ The database stores only token hashes. The development tokens are deliberately n
 Set helpers:
 
 ```bash
-API=http://localhost:8081
+API=http://127.0.0.1:8081
 MANAGER=dev-manager-token
 ALICE=dev-worker-alice-token
 BOB=dev-worker-bob-token
@@ -429,7 +432,7 @@ assigned="$(curl --fail --silent \
 version="$(jq -r '.data.version' <<<"$assigned")"
 ```
 
-Open `http://localhost:8025` and confirm a message addressed to `alice.worker@example.test`.
+Open `http://127.0.0.1:8025` and confirm a message addressed to `alice.worker@example.test`.
 
 Inspect durable notification state:
 
@@ -540,62 +543,48 @@ Production configuration rejects plaintext SMTP and TLS verification bypass. It 
 
 ## 21. Tests and verification
 
-Run tests that do not require a local PostgreSQL server:
-
-```bash
-CGO_ENABLED=0 go test ./...
-go test -race ./...
-```
-
-PostgreSQL tests use an isolated schema per test and skip only when `TEST_DATABASE_URL` is absent:
-
-```bash
-export TEST_DATABASE_URL='postgres://work:work@localhost:5432/work_management?sslmode=disable'
-go test -count=1 ./...
-```
-
-Locally executable static/unit verification:
+Quick local verification:
 
 ```bash
 make verify
 ```
 
-Full clean-state verification on a machine with Docker, PostgreSQL-capable networking, and `golangci-lint`:
+This runs formatting, module/tidy drift, vet, normal and race tests, the OpenAPI contract, the secret-pattern check, and all command builds. Database-gated tests deliberately skip when `TEST_DATABASE_URL` is absent, so this is a fast development gate rather than authoritative submission evidence.
+
+To run the database suites directly against an existing PostgreSQL database:
+
+```bash
+export TEST_DATABASE_URL='postgres://work:work@127.0.0.1:5432/work_management?sslmode=disable'
+make test-db test-db-race
+```
+
+Authoritative local verification requires Docker Engine/Compose, Go, `curl`, `jq`, `git`, and `golangci-lint`:
 
 ```bash
 make verify-full
 ```
 
-`make verify-full` runs linting, builds the image, starts an isolated Compose project on alternate host ports, waits for API and worker readiness, runs the PostgreSQL integration suite, exercises the manager-to-worker flow, confirms authorization rejection, sends through Mailpit over real SMTP, and removes the verification volumes.
+`make verify-full` runs the static, lint, command-build, OpenAPI, secret, rendered-Compose, and image-build gates. It then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
 
-Individual checks remain available:
+The same Compose authority is available without the surrounding static gates:
 
 ```bash
-make lint
-make docker-build
 make compose-smoke
-git diff --check
 ```
 
 The suite protects:
 
-- lifecycle and authorization policy;
-- assignee role and creator/completed invariants;
-- immutable create-idempotency snapshots, including concurrent same-key requests;
-- atomic assignment/history/outbox behavior;
-- forced outbox-insert rollback;
-- concurrent assignment and transition results;
-- stable pagination boundaries;
-- migration/constraint behavior;
-- seed idempotency;
-- one-row concurrent notification claims, UUID fencing, database-clock scheduling, and lease recovery;
-- safe retry/terminal failure codes, replay attribution/cycle limits, and append-only attempt/replay history;
-- real TCP SMTP delivery, stage-aware classification, and provider-text redaction;
-- HTTP authentication, scoping, error shape, ETags, and full PostgreSQL-backed flow;
-- public/admin listener isolation, bounded deterministic HTTP metric labels, and backlog cache concurrency/failure behavior;
-- OpenAPI business-route presence and operational-route absence.
+- the complete manager/worker lifecycle, authorization and non-disclosure policy;
+- transport-invalid requests before mutation, stable errors/request IDs, ETags, replay headers, and all 11 public operations;
+- immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, concurrency conflicts, and keyset traversal;
+- database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
+- one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;
+- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, and header-injection behavior;
+- public/admin listener isolation, bounded metric labels, and last-good backlog caching;
+- the exact public OpenAPI method/path, security, response-status, schema, and response-header contract;
+- a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
 
-Database-backed and lint verification require a reachable PostgreSQL server, Docker for the Compose smoke path, and `golangci-lint`. A skipped database test is not successful verification; run the full gates in a capable environment before treating a change as verified.
+Commands and exact observed outcomes are recorded in [`docs/assessment/verification.md`](docs/assessment/verification.md). The review traceability and remaining debt are in [`docs/assessment/self-review.md`](docs/assessment/self-review.md).
 
 ## 22. Operability
 
@@ -659,7 +648,6 @@ Before production:
 - Worker throughput is sequential per process; horizontal workers are supported.
 - Operational endpoints are unauthenticated and rely on network isolation; loopback defaults protect local execution but are not a production authorization mechanism.
 - No load/soak test has established production capacity.
-- Docker/Compose and PostgreSQL integration execution could not be completed in the original construction environment.
 
 ## 25. Architecture Decision Records
 
@@ -707,15 +695,8 @@ Start with the README walkthrough, lifecycle and authorization matrix, architect
 
 ## 27. AI usage disclosure
 
-OpenAI ChatGPT (GPT-5.6 Pro) was used to help:
+OpenAI AI coding assistants were used to help structure the ambiguity analysis and implementation plan; draft and revise Go, SQL, tests, OpenAPI, Compose/CI configuration, diagrams, and documentation; enumerate failure and security cases; and compare implementation behavior with the written contract.
 
-- structure the ambiguity analysis and implementation plan;
-- generate and revise Go code, SQL, tests, Compose/CI configuration, OpenAPI, diagrams, and documentation;
-- enumerate failure modes, security concerns, and verification checks;
-- review implementation consistency and surface defects during iterative test runs.
+AI output was treated as a draft, not as verification. Defects and unsupported assumptions found by tests and review were corrected in the repository. The executable gates, deliberate negative cases, and exact observed outcomes are recorded in [`docs/assessment/verification.md`](docs/assessment/verification.md), while [`docs/assessment/self-review.md`](docs/assessment/self-review.md) maps requirements to implementation and evidence.
 
-The architecture, invariants, scope, trade-offs, code, SQL, tests, error contract, and documentation were manually reviewed and repeatedly corrected. Generated content was rewritten where tests or design review exposed incorrect assumptions, including PostgreSQL timestamp formats, DSN runtime options, SMTP address formatting, metrics dependency wiring, and retry semantics.
-
-Validation includes unit tests, race-capable tests, real TCP SMTP tests, PostgreSQL integration suites, an HTTP/PostgreSQL end-to-end test, OpenAPI checks, secret-pattern checks, and Compose/demo workflows. Environment-dependent checks that could not run are disclosed rather than represented as successful.
-
-The submitter is expected to be able to explain and defend every included decision and implementation detail during the technical debrief.
+The submitter remains responsible for the final architecture, trade-offs, source, and claims, and should be able to explain and defend every included decision during the technical debrief.

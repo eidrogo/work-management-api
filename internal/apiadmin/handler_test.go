@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestAdminHandlerServesOperationalEndpoints(t *testing.T) {
@@ -80,6 +81,53 @@ func TestAdminHandlerReadinessFailure(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "sensitive database detail") {
 		t.Fatalf("log=%q", logs.String())
+	}
+}
+
+func TestAdminHandlerReadinessPropagatesTwoSecondDeadline(t *testing.T) {
+	deadlineSeen := make(chan time.Duration, 1)
+	handler, err := New(Config{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Readiness: func(ctx context.Context) error {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				return errors.New("readiness context has no deadline")
+			}
+			deadlineSeen <- time.Until(deadline)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		Metrics: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	parent, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(parent)
+	result := make(chan int, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		result <- response.Code
+	}()
+	var remaining time.Duration
+	select {
+	case remaining = <-deadlineSeen:
+	case <-time.After(time.Second):
+		t.Fatal("readiness did not receive context")
+	}
+	if remaining < 1500*time.Millisecond || remaining > 2100*time.Millisecond {
+		t.Fatalf("readiness deadline remaining=%s", remaining)
+	}
+	cancel()
+	select {
+	case status := <-result:
+		if status != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readiness did not observe cancellation")
 	}
 }
 

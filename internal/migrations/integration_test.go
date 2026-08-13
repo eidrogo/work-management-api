@@ -2,6 +2,8 @@ package migrations_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/eidrogo/work-management-api/internal/migrations"
 	"github.com/eidrogo/work-management-api/internal/testsupport/postgrestest"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestFreshMigrationCreatesConstraints(t *testing.T) {
@@ -47,6 +50,60 @@ func TestInitialDownMigrationDropsTask2Objects(t *testing.T) {
 		if got := postgrestest.Count(t, db, `SELECT count(*) FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=$1`, relation); got != 0 {
 			t.Fatalf("relation %s remains", relation)
 		}
+	}
+	changed, err = runner.Up(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0].Version != 1 {
+		t.Fatalf("reapplied=%#v", changed)
+	}
+	for _, relation := range []string{"notification_replay_events", "notification_attempts", "notification_deliveries", "idempotency_keys", "work_items"} {
+		if got := postgrestest.Count(t, db, `SELECT count(*) FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=$1`, relation); got != 1 {
+			t.Fatalf("reapplied relation %s count=%d", relation, got)
+		}
+	}
+}
+
+func TestDatabaseGuardsWorkItemAndAuditInvariants(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := time.Now().UTC()
+	postgrestest.MustExec(t, db, `INSERT INTO users(id,display_name,email,role,created_at) VALUES
+('11111111-1111-4111-8111-111111111111','Manager','manager-invariants@example.test','MANAGER',$1),
+('22222222-2222-4222-8222-222222222222','Worker','worker-invariants@example.test','WORKER',$1)`, now)
+	postgrestest.MustExec(t, db, `INSERT INTO work_items(id,title,description,status,creator_id,assignee_id,version,created_at,updated_at)
+VALUES('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Guarded','','ASSIGNED','11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222',2,$1,$1)`, now)
+	var eventID int64
+	if err := db.QueryRowContext(context.Background(), `INSERT INTO work_item_events(public_id,work_item_id,actor_id,event_type,from_status,to_status,new_assignee_id,occurred_at)
+VALUES('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','11111111-1111-4111-8111-111111111111','WORK_ITEM_ASSIGNED','UNASSIGNED','ASSIGNED','22222222-2222-4222-8222-222222222222',$1) RETURNING id`, now).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	postgrestest.MustExec(t, db, `INSERT INTO notification_deliveries(id,work_item_id,assignment_event_id,recipient_email,recipient_name,event_type,payload,status,attempt_count,delivery_cycle,cycle_attempt_count,next_attempt_at,message_id,created_at,updated_at,deduplication_key)
+VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',$1,'worker-invariants@example.test','Worker','WORK_ITEM_ASSIGNED_EMAIL','{}','PENDING',0,1,0,$2,'<invariant@example.test>',$2,$2,'invariant')`, eventID, now)
+	postgrestest.MustExec(t, db, `INSERT INTO notification_attempts(notification_id,attempt_number,worker_id,outcome,error_code,error_message,started_at,finished_at)
+VALUES('cccccccc-cccc-4ccc-8ccc-cccccccccccc',1,'worker','FAILED','DELIVERY_FAILED','The notification could not be delivered.',$1,$1)`, now)
+
+	statements := []string{
+		`INSERT INTO work_items(id,title,description,status,creator_id,assignee_id,version,created_at,updated_at) VALUES('dddddddd-dddd-4ddd-8ddd-dddddddddddd','Bad manager','','ASSIGNED','11111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111',1,clock_timestamp(),clock_timestamp())`,
+		`UPDATE users SET role='MANAGER' WHERE id='22222222-2222-4222-8222-222222222222'`,
+		`UPDATE work_items SET creator_id='22222222-2222-4222-8222-222222222222' WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`,
+		`UPDATE work_item_events SET reason='mutated' WHERE id=` + fmt.Sprint(eventID),
+		`UPDATE notification_attempts SET worker_id='mutated' WHERE notification_id='cccccccc-cccc-4ccc-8ccc-cccccccccccc'`,
+	}
+	for _, statement := range statements {
+		_, err := db.ExecContext(context.Background(), statement)
+		assertSQLState(t, err, "23514")
+	}
+	postgrestest.MustExec(t, db, `UPDATE work_items SET status='COMPLETED',version=3 WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`)
+	_, err := db.ExecContext(context.Background(), `UPDATE work_items SET title='mutated' WHERE id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'`)
+	assertSQLState(t, err, "23514")
+}
+
+func assertSQLState(t *testing.T, err error, want string) {
+	t.Helper()
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) || postgresError.Code != want {
+		t.Fatalf("error=%v SQLSTATE=%v want=%s", err, postgresError, want)
 	}
 }
 

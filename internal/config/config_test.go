@@ -151,6 +151,56 @@ func TestLoadWorkerRequiresLeaseLongerThanOneSMTPTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerProductionSMTPGuards(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV":              "production",
+		"DATABASE_URL":         "postgres://db.example.test/work?sslmode=verify-full",
+		"SMTP_HOST":            "smtp.example.test",
+		"SMTP_PORT":            "587",
+		"SMTP_FROM":            "work@example.test",
+		"SMTP_TLS_MODE":        "starttls",
+		"SMTP_TLS_SERVER_NAME": "smtp.example.test",
+		"SMTP_TIMEOUT":         "10s",
+		"LEASE_DURATION":       "11s",
+	}
+	tests := []struct {
+		name   string
+		values map[string]string
+		want   string
+	}{
+		{name: "plain TLS", values: map[string]string{"SMTP_TLS_MODE": "plain"}, want: "plain SMTP is not allowed"},
+		{name: "username only", values: map[string]string{"SMTP_USERNAME": "user"}, want: "configured together"},
+		{name: "password only", values: map[string]string{"SMTP_PASSWORD": "secret"}, want: "configured together"},
+		{name: "verification bypass", values: map[string]string{"SMTP_TLS_INSECURE_SKIP_VERIFY": "true"}, want: "forbidden in production"},
+		{name: "lease equals timeout", values: map[string]string{"LEASE_DURATION": "10s"}, want: "must exceed SMTP_TIMEOUT"},
+		{name: "verified STARTTLS"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := make(map[string]string, len(base)+len(test.values))
+			for key, value := range base {
+				values[key] = value
+			}
+			for key, value := range test.values {
+				values[key] = value
+			}
+			config, err := LoadWorker(mapLookup(values))
+			if test.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if config.SMTP.TLSMode != TLSModeSTARTTLS || config.SMTP.TLSInsecureSkipVerify || config.SMTP.TLSServerName != "smtp.example.test" {
+					t.Fatalf("SMTP=%#v", config.SMTP)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want substring=%q", err, test.want)
+			}
+		})
+	}
+}
+
 func mapLookup(values map[string]string) LookupEnv {
 	return func(key string) (string, bool) { value, ok := values[key]; return value, ok }
 }

@@ -27,7 +27,7 @@ Use one Go module and one PostgreSQL schema. Build separate `cmd/api` and `cmd/w
 
 ## Operational impact
 
-Operate two long-running processes, two health/metrics endpoints, and one database. Rollouts should preserve schema compatibility with both current and previous process versions.
+Operate two long-running processes, three listeners (API public, API admin, and worker admin), two unauthenticated administrative surfaces, and one database. The administrative listeners require a private network boundary. Rollouts should preserve schema compatibility with both current and previous API/worker versions.
 
 ## Revisit when
 
@@ -35,3 +35,8 @@ Operate two long-running processes, two health/metrics endpoints, and one databa
 - Worker load materially harms API database performance despite tuning.
 - Regulatory or blast-radius requirements demand isolation.
 - A broker or provider-specific service becomes a distinct platform capability.
+
+## Related decisions
+
+- [ADR 0002: PostgreSQL transactional outbox](0002-transactional-outbox.md)
+- [ADR 0007: Private operational endpoints and bounded metrics](0007-private-operational-endpoints.md)

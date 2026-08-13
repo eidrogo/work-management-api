@@ -41,6 +41,28 @@ func TestServeEndpointsShutsDownBothOnCancellation(t *testing.T) {
 	assertListenerClosed(t, adminAddress)
 }
 
+func TestBindEndpointsClosesPublicWhenAdminAddressIsOccupied(t *testing.T) {
+	occupied := listenLoopback(t)
+	reservedPublic := listenLoopback(t)
+	publicAddress := reservedPublic.Addr().String()
+	if err := reservedPublic.Close(); err != nil {
+		t.Fatal(err)
+	}
+	public, admin, err := bindEndpoints(publicAddress, occupied.Addr().String())
+	if err == nil || !strings.Contains(err.Error(), "bind API admin listener") {
+		t.Fatalf("public=%v admin=%v error=%v", public, admin, err)
+	}
+	if public != nil || admin != nil {
+		t.Fatalf("listeners returned after failed prebind: public=%v admin=%v", public, admin)
+	}
+	// A successful public prebind must be closed before the caller could serve it.
+	probe, probeErr := net.Listen("tcp", publicAddress)
+	if probeErr != nil {
+		t.Fatal(probeErr)
+	}
+	_ = probe.Close()
+}
+
 func TestServeEndpointsShutsDownSiblingAfterListenerFailure(t *testing.T) {
 	healthyListener := listenLoopback(t)
 	healthyAddress := healthyListener.Addr().String()

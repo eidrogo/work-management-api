@@ -1,0 +1,21 @@
+services:
+  postgres:
+    ports: !override
+      - target: 5432
+        host_ip: 127.0.0.1
+  mailpit:
+    ports: !override
+      - target: 1025
+        host_ip: 127.0.0.1
+      - target: 8025
+        host_ip: 127.0.0.1
+  api:
+    ports: !override
+      - target: 8080
+        host_ip: 127.0.0.1
+      - target: 9090
+        host_ip: 127.0.0.1
+  worker:
+    ports: !override
+      - target: 9091
+        host_ip: 127.0.0.1

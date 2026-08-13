@@ -7,21 +7,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16.14-bookworm@sha256:64154d0babcb1741988719e703419af0382b19953706149f9872fbd0f438efa8
-        env:
-          POSTGRES_DB: work_management_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres -d work_management_test"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
-    env:
-      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/work_management_test?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -29,16 +14,12 @@ jobs:
           go-version: "1.26.5"
           cache: true
       - run: go mod download
-      - run: make mod-verify
-      - run: make tidy-check
-      - run: make fmt-check
-      - run: make vet
-      - run: CGO_ENABLED=0 go test -count=1 ./...
-      - run: go test -race -count=1 ./...
-      - run: make openapi-check
-      - run: make secret-check
-      - run: make build
+      - run: make fmt-check mod-verify tidy-check vet
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
-      - run: docker build -t work-management-api:${{ github.sha }} .
+      - run: make build openapi-check secret-check compose-config-check docker-build
+      - name: Complete PostgreSQL, race, stack, demo, listener, and cleanup verification
+        run: make compose-smoke
+        timeout-minutes: 20
+      - run: make clean-check
