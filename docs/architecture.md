@@ -5,7 +5,9 @@
 ```mermaid
 flowchart LR
     Client[Manager / Worker / Future Client]
-    API[Go HTTP API<br/>cmd/api]
+    Public[API public listener<br/>HTTP_ADDR]
+    APIAdmin[API admin listener<br/>API_ADMIN_ADDR]
+    Operator[Local orchestrator / private scraper]
     Auth[Development Token Resolver<br/>replaceable identity boundary]
     Domain[Work-item Application Service<br/>authorization + lifecycle]
     PG[(PostgreSQL<br/>system of record)]
@@ -15,12 +17,14 @@ flowchart LR
     Attempts[(notification_attempts<br/>append-only)]
     SMTP[SMTP Server / Provider]
     Mailpit[Mailpit local sink]
-    Metrics[Prometheus-compatible metrics]
-    Ops[Health / logs / replay command]
+    APIMetrics[API process metrics]
+    WorkerAdmin[Worker admin listener<br/>WORKER_HTTP_ADDR]
+    WorkerMetrics[Worker process metrics]
+    Ops[Logs / replay command]
 
-    Client -->|Bearer token + JSON /v1| API
-    API --> Auth
-    API --> Domain
+    Client -->|Bearer token + JSON /v1| Public
+    Public --> Auth
+    Public --> Domain
     Domain -->|explicit transaction| PG
     PG --- Events
     PG --- Outbox
@@ -28,13 +32,17 @@ flowchart LR
     Worker -->|SMTP| SMTP
     SMTP -. local .-> Mailpit
     Worker --> Attempts
-    API --> Metrics
-    Worker --> Metrics
-    API --> Ops
+    Operator --> APIAdmin
+    Operator --> WorkerAdmin
+    APIAdmin --> APIMetrics
+    WorkerAdmin --> WorkerMetrics
+    APIAdmin -->|readiness + cached backlog| PG
+    WorkerAdmin -->|readiness + cached backlog| PG
+    Public --> Ops
     Worker --> Ops
 ```
 
-The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release artifact, and operational conventions.
+The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release artifact, and operational conventions. The API process pre-binds its public and administrative sockets before serving and drains both concurrently under one shutdown budget. Direct execution uses loopback defaults for both administrative listeners. Compose uses wildcard binds inside each container so port forwarding works, but publishes every host port only on `127.0.0.1`. Health and metrics remain unauthenticated and therefore require a private network boundary outside local development.
 
 ## Assignment and notification sequence
 

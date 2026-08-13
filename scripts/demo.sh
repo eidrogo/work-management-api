@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 API_URL="${API_URL:-http://localhost:${API_PORT:-8081}}"
+API_ADMIN_URL="${API_ADMIN_URL:-http://127.0.0.1:${API_ADMIN_PORT:-9090}}"
 MAILPIT_URL="${MAILPIT_URL:-http://localhost:${MAILPIT_UI_PORT:-8025}}"
 MANAGER_TOKEN="${MANAGER_TOKEN:-dev-manager-token}"
 ALICE_TOKEN="${ALICE_TOKEN:-dev-worker-alice-token}"
 BOB_TOKEN="${BOB_TOKEN:-dev-worker-bob-token}"
 ALICE_ID="22222222-2222-4222-8222-222222222222"
 command -v curl >/dev/null; command -v jq >/dev/null
-for _ in $(seq 1 60); do curl --fail --silent "$API_URL/health/ready" >/dev/null && break; sleep 1; done
+for _ in $(seq 1 60); do curl --fail --silent "$API_ADMIN_URL/health/ready" >/dev/null && break; sleep 1; done
 key="demo-$(date +%s)-$$"
 created="$(curl --fail --silent -X POST "$API_URL/v1/work-items" -H "Authorization: Bearer $MANAGER_TOKEN" -H 'Content-Type: application/json' -H "Idempotency-Key: $key" -d '{"title":"Inspect loading dock","description":"Verify the exception and document the findings."}')"
 item_id="$(jq -r '.data.id' <<<"$created")"; version="$(jq -r '.data.version' <<<"$created")"

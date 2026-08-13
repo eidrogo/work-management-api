@@ -32,14 +32,58 @@ func TestAuthenticationFailureUsesMachineReadableError(t *testing.T) {
 		t.Fatalf("body=%#v", body)
 	}
 }
-func TestHealthEndpoints(t *testing.T) {
+func TestPublicServerExcludesOperationalEndpoints(t *testing.T) {
 	server := newTestServer(t)
-	for _, path := range []string{"/health/live", "/health/ready"} {
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("%s=%d", path, response.Code)
-		}
+	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			assertPublicNotFound(t, response)
+		})
+	}
+}
+
+func TestPublicUnknownRoutesKeepStableEnvelope(t *testing.T) {
+	server, err := NewServer(ServerConfig{
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator:  replayAuthenticator{principals: map[string]auth.Principal{"valid": {ID: "manager", Role: auth.RoleManager}}},
+		WorkItems:      &fakeWorkItems{},
+		Notifications:  &fakeNotifications{},
+		RequestID:      func() (string, error) { return "request-test-id", nil },
+		MaxBodyBytes:   1024,
+		MetricRecorder: nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/unrelated", "/v1/unknown"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("Authorization", "Bearer valid")
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			assertPublicNotFound(t, response)
+		})
+	}
+}
+
+func assertPublicNotFound(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("Content-Type=%q", contentType)
+	}
+	if requestID := response.Header().Get("X-Request-ID"); requestID != "request-test-id" {
+		t.Fatalf("X-Request-ID=%q", requestID)
+	}
+	var body errorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "RESOURCE_NOT_FOUND" || body.Error.RequestID != "request-test-id" {
+		t.Fatalf("body=%#v", body)
 	}
 }
 
@@ -76,7 +120,7 @@ func TestReplayHTTPRequiresReasonAndAttributesRequest(t *testing.T) {
 				Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 				Authenticator: replayAuthenticator{principals: map[string]auth.Principal{"manager": manager, "worker": worker}},
 				WorkItems:     &fakeWorkItems{}, Notifications: service,
-				Readiness: func(context.Context) error { return nil }, RequestID: func() (string, error) { return "generated-request", nil }, MaxBodyBytes: 1 << 20,
+				RequestID: func() (string, error) { return "generated-request", nil }, MaxBodyBytes: 1 << 20,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -121,7 +165,7 @@ func TestReplayHTTPPersistsFallbackRequestID(t *testing.T) {
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Authenticator: replayAuthenticator{principals: map[string]auth.Principal{"manager": {ID: "manager-http", Role: auth.RoleManager}}},
 		WorkItems:     &fakeWorkItems{}, Notifications: service,
-		Readiness: func(context.Context) error { return nil }, RequestID: func() (string, error) { return "", errors.New("entropy unavailable") }, MaxBodyBytes: 1 << 20,
+		RequestID: func() (string, error) { return "", errors.New("entropy unavailable") }, MaxBodyBytes: 1 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +180,7 @@ func TestReplayHTTPPersistsFallbackRequestID(t *testing.T) {
 	}
 }
 func newTestServer(t *testing.T) http.Handler {
-	server, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: fakeAuthenticator{}, WorkItems: &fakeWorkItems{}, Notifications: &fakeNotifications{}, Readiness: func(context.Context) error { return nil }, RequestID: func() (string, error) { return "request-test-id", nil }, MaxBodyBytes: 1024})
+	server, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: fakeAuthenticator{}, WorkItems: &fakeWorkItems{}, Notifications: &fakeNotifications{}, RequestID: func() (string, error) { return "request-test-id", nil }, MaxBodyBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}

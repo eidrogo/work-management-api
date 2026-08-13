@@ -15,7 +15,6 @@ import (
 	"github.com/eidrogo/work-management-api/internal/auth"
 	"github.com/eidrogo/work-management-api/internal/notifications"
 	"github.com/eidrogo/work-management-api/internal/platform/clock"
-	"github.com/eidrogo/work-management-api/internal/platform/database"
 	"github.com/eidrogo/work-management-api/internal/platform/id"
 	"github.com/eidrogo/work-management-api/internal/seed"
 	"github.com/eidrogo/work-management-api/internal/testsupport/postgrestest"
@@ -30,7 +29,7 @@ func TestDocumentedHTTPFlow(t *testing.T) {
 	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
 	store, _ := notifications.NewStore(db)
 	notificationService, _ := notifications.NewService(store)
-	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +61,7 @@ func TestCreateIdempotencyHTTPReturnsOriginalETagAndBody(t *testing.T) {
 	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
 	store, _ := notifications.NewStore(db)
 	notificationService, _ := notifications.NewService(store)
-	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +112,7 @@ func TestReplayHTTPPersistsExactRequestIDAndAuthenticatedActor(t *testing.T) {
 	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
 	store, _ := notifications.NewStore(db)
 	notificationService, _ := notifications.NewService(store)
-	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}

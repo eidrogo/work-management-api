@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
-.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race lint build openapi-check secret-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
+.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race lint build openapi-check secret-check compose-config-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
 help:
 	@printf '%s\n' 'make up - start the complete stack' 'make demo - run the documented flow' 'make verify - static/unit verification'
 fmt:
@@ -33,8 +33,10 @@ openapi-check:
 	CGO_ENABLED=0 go test ./internal/contract -run TestOpenAPIContract -count=1
 secret-check:
 	./scripts/check-secrets.sh
+compose-config-check:
+	./scripts/check-compose-config.sh
 verify: fmt-check mod-verify tidy-check vet test test-race openapi-check secret-check build
-verify-full: verify lint docker-build compose-smoke
+verify-full: verify lint compose-config-check docker-build compose-smoke
 compose-smoke:
 	./scripts/verify-compose.sh
 migrate:

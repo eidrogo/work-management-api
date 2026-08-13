@@ -16,20 +16,43 @@ import (
 type BacklogReader interface {
 	Backlog(context.Context) (notifications.Backlog, error)
 }
-type httpKey struct{ method, route, status string }
+
+const (
+	maxHTTPSeries   = 1024
+	backlogCacheTTL = 5 * time.Second
+	backlogTimeout  = time.Second
+)
+
+type httpKey struct {
+	method string
+	route  string
+	status int
+}
 type mutationKey struct{ operation, outcome string }
 type httpSample struct {
 	count    uint64
 	duration time.Duration
 }
+type backlogCache struct {
+	value             notifications.Backlog
+	hasValue          bool
+	refreshAfter      time.Time
+	refreshing        bool
+	lastRefreshFailed bool
+}
 type Registry struct {
-	mu                                  sync.Mutex
-	http                                map[httpKey]httpSample
-	authFailures, authorizationFailures uint64
-	mutations                           map[mutationKey]uint64
-	notificationAttempts                map[string]uint64
-	backlog                             BacklogReader
-	now                                 func() time.Time
+	mu                    sync.Mutex
+	http                  map[httpKey]httpSample
+	httpSeriesDropped     uint64
+	authFailures          uint64
+	authorizationFailures uint64
+	mutations             map[mutationKey]uint64
+	notificationAttempts  map[string]uint64
+
+	backlogMu    sync.Mutex
+	backlogState backlogCache
+	backlog      BacklogReader
+	now          func() time.Time
 }
 
 func New(backlog BacklogReader, now func() time.Time) *Registry {
@@ -42,14 +65,93 @@ func (r *Registry) RecordHTTP(method, route string, status int, duration time.Du
 	if r == nil {
 		return
 	}
+	key := httpKey{method: canonicalHTTPMethod(method), route: canonicalHTTPRoute(route), status: status}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := httpKey{method, route, strconv.Itoa(status)}
-	sample := r.http[key]
+	sample, exists := r.http[key]
+	if !exists && len(r.http) >= maxHTTPSeries {
+		r.httpSeriesDropped++
+		return
+	}
 	sample.count++
 	sample.duration += duration
 	r.http[key] = sample
 }
+
+func canonicalHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut:
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
+func canonicalHTTPRoute(route string) string {
+	switch route {
+	case "/v1/work-items",
+		"/v1/me/work-items",
+		"/v1/work-items/{id}",
+		"/v1/work-items/{id}/assignment",
+		"/v1/work-items/{id}/start",
+		"/v1/work-items/{id}/complete",
+		"/v1/work-items/{id}/history",
+		"/v1/notifications",
+		"/v1/notifications/{id}",
+		"/v1/notifications/{id}/replay",
+		"/unknown":
+		return route
+	default:
+		return "/unknown"
+	}
+}
+
+func (r *Registry) cachedBacklog(ctx context.Context) (notifications.Backlog, bool) {
+	if r.backlog == nil {
+		return notifications.Backlog{}, false
+	}
+
+	now := r.now()
+	r.backlogMu.Lock()
+	if r.backlogState.refreshing || now.Before(r.backlogState.refreshAfter) {
+		value := cloneBacklog(r.backlogState.value)
+		failed := r.backlogState.lastRefreshFailed || !r.backlogState.hasValue
+		r.backlogMu.Unlock()
+		return value, failed
+	}
+	r.backlogState.refreshing = true
+	r.backlogMu.Unlock()
+
+	queryCtx, cancel := context.WithTimeout(ctx, backlogTimeout)
+	value, err := r.backlog.Backlog(queryCtx)
+	cancel()
+	completedAt := r.now()
+
+	r.backlogMu.Lock()
+	if err == nil {
+		r.backlogState.value = cloneBacklog(value)
+		r.backlogState.hasValue = true
+		r.backlogState.lastRefreshFailed = false
+	} else {
+		r.backlogState.lastRefreshFailed = true
+	}
+	r.backlogState.refreshAfter = completedAt.Add(backlogCacheTTL)
+	r.backlogState.refreshing = false
+	snapshot := cloneBacklog(r.backlogState.value)
+	failed := r.backlogState.lastRefreshFailed || !r.backlogState.hasValue
+	r.backlogMu.Unlock()
+	return snapshot, failed
+}
+
+func cloneBacklog(value notifications.Backlog) notifications.Backlog {
+	result := value
+	if value.OldestPendingAt != nil {
+		oldest := *value.OldestPendingAt
+		result.OldestPendingAt = &oldest
+	}
+	return result
+}
+
 func (r *Registry) RecordAuthFailure() {
 	if r == nil {
 		return
@@ -93,6 +195,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for key, value := range r.http {
 		httpValues[key] = value
 	}
+	httpSeriesDropped := r.httpSeriesDropped
 	authFailures, authorizationFailures := r.authFailures, r.authorizationFailures
 	mutations := map[mutationKey]uint64{}
 	for key, value := range r.mutations {
@@ -119,28 +222,42 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 	for _, key := range keys {
 		value := httpValues[key]
-		fmt.Fprintf(&builder, "work_management_http_requests_total{method=%s,route=%s,status=%s} %d\n", strconv.Quote(key.method), strconv.Quote(key.route), strconv.Quote(key.status), value.count)
-		fmt.Fprintf(&builder, "work_management_http_request_duration_seconds_sum{method=%s,route=%s} %.6f\n", strconv.Quote(key.method), strconv.Quote(key.route), value.duration.Seconds())
+		fmt.Fprintf(&builder, "work_management_http_requests_total{method=%s,route=%s,status=%s} %d\n", strconv.Quote(key.method), strconv.Quote(key.route), strconv.Quote(strconv.Itoa(key.status)), value.count)
 	}
+	for _, key := range keys {
+		value := httpValues[key]
+		fmt.Fprintf(&builder, "work_management_http_request_duration_seconds_sum{method=%s,route=%s,status=%s} %.6f\n", strconv.Quote(key.method), strconv.Quote(key.route), strconv.Quote(strconv.Itoa(key.status)), value.duration.Seconds())
+	}
+	fmt.Fprintf(&builder, "work_management_http_series_dropped_total %d\n", httpSeriesDropped)
 	fmt.Fprintf(&builder, "work_management_authentication_failures_total %d\n", authFailures)
 	fmt.Fprintf(&builder, "work_management_authorization_failures_total %d\n", authorizationFailures)
-	for key, value := range mutations {
+	mutationKeys := make([]mutationKey, 0, len(mutations))
+	for key := range mutations {
+		mutationKeys = append(mutationKeys, key)
+	}
+	sort.Slice(mutationKeys, func(i, j int) bool {
+		if mutationKeys[i].operation != mutationKeys[j].operation {
+			return mutationKeys[i].operation < mutationKeys[j].operation
+		}
+		return mutationKeys[i].outcome < mutationKeys[j].outcome
+	})
+	for _, key := range mutationKeys {
+		value := mutations[key]
 		fmt.Fprintf(&builder, "work_management_mutations_total{operation=%s,outcome=%s} %d\n", strconv.Quote(key.operation), strconv.Quote(key.outcome), value)
 	}
-	for outcome, value := range attempts {
+	attemptOutcomes := make([]string, 0, len(attempts))
+	for outcome := range attempts {
+		attemptOutcomes = append(attemptOutcomes, outcome)
+	}
+	sort.Strings(attemptOutcomes)
+	for _, outcome := range attemptOutcomes {
+		value := attempts[outcome]
 		fmt.Fprintf(&builder, "work_management_notification_attempts_total{outcome=%s} %d\n", strconv.Quote(outcome), value)
 	}
-	backlog := notifications.Backlog{}
+	backlog, failed := r.cachedBacklog(req.Context())
 	scrapeError := 0
-	if r.backlog != nil {
-		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
-		value, err := r.backlog.Backlog(ctx)
-		cancel()
-		if err != nil {
-			scrapeError = 1
-		} else {
-			backlog = value
-		}
+	if failed {
+		scrapeError = 1
 	}
 	fmt.Fprintf(&builder, "work_management_notification_pending %d\n", backlog.Pending)
 	fmt.Fprintf(&builder, "work_management_notification_processing %d\n", backlog.Processing)

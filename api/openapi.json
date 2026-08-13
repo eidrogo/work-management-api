@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "http://localhost:8081",
+      "url": "http://127.0.0.1:8081",
       "description": "Default local Docker Compose endpoint"
     }
   ],
@@ -20,9 +20,6 @@
     },
     {
       "name": "Notifications"
-    },
-    {
-      "name": "Operations"
     }
   ],
   "security": [
@@ -680,90 +677,6 @@
           }
         }
       }
-    },
-    "/health/live": {
-      "get": {
-        "security": [],
-        "tags": [
-          "Operations"
-        ],
-        "summary": "Process liveness",
-        "operationId": "liveness",
-        "responses": {
-          "200": {
-            "description": "Process is alive",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Health"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "$ref": "#/components/headers/XRequestID"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/health/ready": {
-      "get": {
-        "security": [],
-        "tags": [
-          "Operations"
-        ],
-        "summary": "Database-backed readiness",
-        "operationId": "readiness",
-        "responses": {
-          "200": {
-            "description": "Dependencies are ready",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Health"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "$ref": "#/components/headers/XRequestID"
-              }
-            }
-          },
-          "503": {
-            "$ref": "#/components/responses/DependencyUnavailable"
-          }
-        }
-      }
-    },
-    "/metrics": {
-      "get": {
-        "security": [],
-        "tags": [
-          "Operations"
-        ],
-        "summary": "Prometheus-compatible metrics",
-        "operationId": "metrics",
-        "responses": {
-          "200": {
-            "description": "Prometheus text exposition",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "$ref": "#/components/headers/XRequestID"
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -960,21 +873,6 @@
       },
       "UnsupportedMediaType": {
         "description": "Request body is not application/json",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/ErrorEnvelope"
-            }
-          }
-        },
-        "headers": {
-          "X-Request-ID": {
-            "$ref": "#/components/headers/XRequestID"
-          }
-        }
-      },
-      "DependencyUnavailable": {
-        "description": "Required dependency is unavailable",
         "content": {
           "application/json": {
             "schema": {
@@ -1429,17 +1327,6 @@
             "additionalProperties": true
           },
           "request_id": {
-            "type": "string"
-          }
-        }
-      },
-      "Health": {
-        "type": "object",
-        "required": [
-          "status"
-        ],
-        "properties": {
-          "status": {
             "type": "string"
           }
         }

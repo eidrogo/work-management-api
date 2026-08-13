@@ -5,8 +5,37 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestOpenAPIContainsOnlyBusinessV1Paths(t *testing.T) {
+	document := loadOpenAPIDocument(t)
+	paths := object(t, document, "paths")
+	for path := range paths {
+		if !strings.HasPrefix(path, "/v1/") {
+			t.Errorf("public OpenAPI contains non-business path %q", path)
+		}
+	}
+	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
+		if _, ok := paths[path]; ok {
+			t.Errorf("public OpenAPI contains operational path %q", path)
+		}
+	}
+	for _, rawTag := range document["tags"].([]any) {
+		tag, ok := rawTag.(map[string]any)
+		if ok && tag["name"] == "Operations" {
+			t.Error("public OpenAPI contains Operations tag")
+		}
+	}
+	components := object(t, document, "components")
+	if _, ok := object(t, components, "schemas")["Health"]; ok {
+		t.Error("public OpenAPI contains Health schema")
+	}
+	if _, ok := object(t, components, "responses")["DependencyUnavailable"]; ok {
+		t.Error("public OpenAPI contains DependencyUnavailable response")
+	}
+}
 
 func TestTask2OpenAPIContract(t *testing.T) {
 	document := loadOpenAPIDocument(t)
@@ -189,7 +218,7 @@ func TestOpenAPIContract(t *testing.T) {
 	if document.OpenAPI != "3.1.0" {
 		t.Fatalf("openapi=%q", document.OpenAPI)
 	}
-	for path, methods := range map[string][]string{"/v1/work-items": {"get", "post"}, "/v1/me/work-items": {"get"}, "/v1/notifications": {"get"}, "/health/live": {"get"}, "/health/ready": {"get"}} {
+	for path, methods := range map[string][]string{"/v1/work-items": {"get", "post"}, "/v1/me/work-items": {"get"}, "/v1/notifications": {"get"}} {
 		item, ok := document.Paths[path]
 		if !ok {
 			t.Errorf("missing path %s", path)

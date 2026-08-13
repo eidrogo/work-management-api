@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/mail"
 	"net/url"
 	"os"
@@ -32,6 +33,7 @@ type API struct {
 	Environment       Environment
 	Database          Database
 	HTTPAddress       string
+	AdminHTTPAddress  string
 	AuthMode          string
 	MaxBodyBytes      int64
 	ReadHeaderTimeout time.Duration
@@ -87,6 +89,17 @@ func LoadAPI(lookup LookupEnv) (API, error) {
 	if err != nil {
 		return API{}, err
 	}
+	httpAddress, err := tcpAddressValue(lookup, "HTTP_ADDR", ":8080")
+	if err != nil {
+		return API{}, err
+	}
+	adminHTTPAddress, err := tcpAddressValue(lookup, "API_ADMIN_ADDR", "127.0.0.1:9090")
+	if err != nil {
+		return API{}, err
+	}
+	if httpAddress == adminHTTPAddress {
+		return API{}, fmt.Errorf("HTTP_ADDR and API_ADMIN_ADDR must be different")
+	}
 	authMode := strings.ToLower(value(lookup, "AUTH_MODE", "development"))
 	if environment == EnvironmentProduction && authMode == "development" {
 		return API{}, fmt.Errorf("development authentication is not allowed in production")
@@ -123,7 +136,7 @@ func LoadAPI(lookup LookupEnv) (API, error) {
 		return API{}, err
 	}
 	return API{
-		Environment: environment, Database: database, HTTPAddress: value(lookup, "HTTP_ADDR", ":8080"),
+		Environment: environment, Database: database, HTTPAddress: httpAddress, AdminHTTPAddress: adminHTTPAddress,
 		AuthMode: authMode, MaxBodyBytes: maxBody, ReadHeaderTimeout: readHeader,
 		ReadTimeout: read, WriteTimeout: write, IdleTimeout: idle,
 		ShutdownTimeout: shutdown, LogLevel: level,
@@ -137,6 +150,10 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 		return Worker{}, err
 	}
 	database, err := databaseValue(lookup, environment)
+	if err != nil {
+		return Worker{}, err
+	}
+	httpAddress, err := tcpAddressValue(lookup, "WORKER_HTTP_ADDR", "127.0.0.1:9091")
 	if err != nil {
 		return Worker{}, err
 	}
@@ -224,7 +241,7 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 		workerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	}
 	return Worker{
-		Environment: environment, Database: database, HTTPAddress: value(lookup, "WORKER_HTTP_ADDR", ":9091"), WorkerID: workerID,
+		Environment: environment, Database: database, HTTPAddress: httpAddress, WorkerID: workerID,
 		PollInterval: poll, BatchSize: batch, LeaseDuration: lease, MaxAttempts: attempts,
 		BackoffBase: base, BackoffMax: maximum, ShutdownTimeout: shutdown, LogLevel: level,
 		SMTP: SMTP{Host: host, Port: port, Username: username, Password: password, From: from,
@@ -291,6 +308,23 @@ func value(lookup LookupEnv, key, fallback string) string {
 		return strings.TrimSpace(result)
 	}
 	return fallback
+}
+func tcpAddressValue(lookup LookupEnv, key, fallback string) (string, error) {
+	raw := value(lookup, key, fallback)
+	_, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", fmt.Errorf("%s must be a valid TCP host:port address", key)
+	}
+	for _, character := range port {
+		if character < '0' || character > '9' {
+			return "", fmt.Errorf("%s must be a valid TCP host:port address", key)
+		}
+	}
+	parsedPort, err := strconv.Atoi(port)
+	if err != nil || parsedPort < 1 || parsedPort > 65535 {
+		return "", fmt.Errorf("%s must be a valid TCP host:port address", key)
+	}
+	return raw, nil
 }
 func intValue(lookup LookupEnv, key string, fallback, minimum, maximum int) (int, error) {
 	raw := value(lookup, key, "")

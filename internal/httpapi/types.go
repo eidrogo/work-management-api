@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/eidrogo/work-management-api/internal/auth"
@@ -39,10 +38,8 @@ type ServerConfig struct {
 	Authenticator  Authenticator
 	WorkItems      WorkItemApplication
 	Notifications  NotificationApplication
-	Readiness      func(context.Context) error
 	RequestID      func() (string, error)
 	MaxBodyBytes   int64
-	Metrics        http.Handler
 	MetricRecorder MetricRecorder
 }
 

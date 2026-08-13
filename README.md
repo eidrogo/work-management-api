@@ -38,7 +38,7 @@ The repository contains one Go module with independently runnable API and notifi
 - Manager notification inspection and failed-delivery replay
 - Keyset pagination
 - Stable machine-readable API errors and request IDs
-- Structured logs, health/readiness, and Prometheus-compatible metrics
+- Structured logs, separate API/worker administrative health/readiness listeners, and bounded Prometheus-compatible metrics
 - Migrations, deterministic seed, Docker Compose, demo script, tests, ADRs, diagrams, and CI
 
 ### Explicit non-goals
@@ -155,8 +155,8 @@ See [`docs/architecture.md`](docs/architecture.md) for component and assignment 
 
 The selected design is a modular monolith:
 
-- `cmd/api`: REST API, authentication, health, metrics
-- `cmd/worker`: outbox claim, SMTP delivery, retry, worker health/metrics
+- `cmd/api`: public REST API plus a separately bound administrative listener
+- `cmd/worker`: outbox claim, SMTP delivery, retry, and a separate administrative listener
 - PostgreSQL: current state, immutable history, idempotency, outbox, attempts
 - Mailpit: deterministic local SMTP sink only
 - one shared Go module and release artifact
@@ -188,6 +188,7 @@ cmd/migrate                         Versioned migration command
 cmd/seed                            Deterministic seed command
 cmd/replay-notification             Operational failed-delivery replay
 internal/auth                       Principal roles and token resolver
+internal/apiadmin                   API liveness/readiness/metrics listener
 internal/config                     Validated environment configuration
 internal/httpapi                    Versioned transport and error contract
 internal/metrics                    Prometheus text metrics
@@ -308,11 +309,15 @@ docker compose ps
 
 Default local endpoints:
 
-- API: `http://localhost:8081`
-- API metrics: `http://localhost:8081/metrics`
-- Worker health/metrics: `http://localhost:9091`
-- Mailpit UI: `http://localhost:8025`
-- PostgreSQL: `localhost:5432`
+| Surface | Address | Routes |
+|---|---|---|
+| Public business API | `http://127.0.0.1:8081` | authenticated `/v1/*` only |
+| API admin | `http://127.0.0.1:9090` | `/health/live`, `/health/ready`, `/metrics` |
+| Worker admin | `http://127.0.0.1:9091` | `/health/live`, `/health/ready`, `/metrics` |
+| Mailpit UI | `http://127.0.0.1:8025` | local mail inspection |
+| PostgreSQL | `127.0.0.1:5432` | local database |
+
+Every Compose-published port, including SMTP on 1025, is bound explicitly to IPv4 loopback. `API_PORT`, `API_ADMIN_PORT`, `WORKER_PORT`, `POSTGRES_PORT`, `SMTP_PORT`, and `MAILPIT_UI_PORT` override only their host ports.
 
 Port 8081 is the default host API port because 8080 was occupied during initial discovery. Override with `API_PORT`.
 
@@ -350,6 +355,8 @@ go run ./cmd/migrate up
 go run ./cmd/seed
 go run ./cmd/api
 ```
+
+For direct execution, `HTTP_ADDR` defaults to `:8080`, `API_ADMIN_ADDR` to `127.0.0.1:9090`, and `WORKER_HTTP_ADDR` to `127.0.0.1:9091`. The example environment binds the public API to `127.0.0.1:8081`. Compose deliberately overrides the in-container admin binds to `:9090` and `:9091`, then restricts their published host sockets to `127.0.0.1`.
 
 In another shell with the same environment:
 
@@ -487,7 +494,7 @@ The executable version of this walkthrough is [`scripts/demo.sh`](scripts/demo.s
 
 ## 19. API contract and errors
 
-OpenAPI 3.1: [`api/openapi.json`](api/openapi.json)
+Public-business OpenAPI 3.1: [`api/openapi.json`](api/openapi.json). It documents only authenticated `/v1/*` routes; administrative health and metrics endpoints are intentionally outside the public contract.
 
 All application errors use:
 
@@ -585,22 +592,25 @@ The suite protects:
 - safe retry/terminal failure codes, replay attribution/cycle limits, and append-only attempt/replay history;
 - real TCP SMTP delivery, stage-aware classification, and provider-text redaction;
 - HTTP authentication, scoping, error shape, ETags, and full PostgreSQL-backed flow;
-- OpenAPI route presence.
+- public/admin listener isolation, bounded deterministic HTTP metric labels, and backlog cache concurrency/failure behavior;
+- OpenAPI business-route presence and operational-route absence.
 
 Database-backed and lint verification require a reachable PostgreSQL server, Docker for the Compose smoke path, and `golangci-lint`. A skipped database test is not successful verification; run the full gates in a capable environment before treating a change as verified.
 
 ## 22. Operability
 
-- API liveness: `/health/live`
-- API database readiness: `/health/ready`
-- API metrics: `/metrics`
-- Worker liveness/readiness/metrics: port 9091 equivalents
+- API admin liveness: `http://127.0.0.1:9090/health/live`
+- API admin database readiness: `http://127.0.0.1:9090/health/ready`
+- API admin metrics: `http://127.0.0.1:9090/metrics`
+- Worker admin liveness/readiness/metrics: the equivalent routes on `127.0.0.1:9091`
 - JSON logs to stdout
 - Request ID in API responses and error bodies
 - Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
 Detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures are in [`docs/operations.md`](docs/operations.md).
+
+HTTP metrics retain at most 1,024 distinct canonical `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
 
 ## 23. Security considerations
 
@@ -620,6 +630,8 @@ Implemented:
 - safe client error messages;
 - immutable creator/completed rows and append-only histories;
 - pinned Go version and Docker image tags;
+- separate loopback-default administrative listeners and IPv4-loopback-only Compose publications;
+- finite HTTP metric method/route labels and a fixed retained-series cap;
 - secret-pattern check.
 
 Before production:
@@ -627,7 +639,7 @@ Before production:
 - external OIDC/JWT verification;
 - secret manager and rotation;
 - TLS PostgreSQL;
-- private metrics/health exposure;
+- production network policy or an authenticated proxy for administrative listeners;
 - rate limiting and abuse controls;
 - dependency/SBOM/vulnerability scanning;
 - threat model, security review, and penetration test;
@@ -645,7 +657,7 @@ Before production:
 - No tenant/team dimension.
 - The process metrics registry is in-memory; counters reset on process restart.
 - Worker throughput is sequential per process; horizontal workers are supported.
-- Operational endpoints rely on network isolation rather than application authentication.
+- Operational endpoints are unauthenticated and rely on network isolation; loopback defaults protect local execution but are not a production authorization mechanism.
 - No load/soak test has established production capacity.
 - Docker/Compose and PostgreSQL integration execution could not be completed in the original construction environment.
 
@@ -657,6 +669,7 @@ Before production:
 4. [ADR 0004: Lifecycle, concurrency, pagination](docs/adr/0004-lifecycle-concurrency-pagination.md)
 5. [ADR 0005: Assessment `libpq` adapter](docs/adr/0005-libpq-assessment-adapter.md)
 6. [ADR 0006: Maintained pgx `database/sql` driver](docs/adr/0006-pgx-stdlib-driver.md)
+7. [ADR 0007: Private operational endpoints and bounded metrics](docs/adr/0007-private-operational-endpoints.md)
 
 ## 26. Required reflection answers
 

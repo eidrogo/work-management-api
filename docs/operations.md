@@ -3,7 +3,7 @@
 ## Implemented operational behavior
 
 - JSON logs and request IDs.
-- API and worker liveness/readiness endpoints.
+- Separate API and worker administrative liveness/readiness/metrics listeners.
 - Database-backed readiness with timeouts.
 - HTTP and SMTP timeouts.
 - Prometheus-compatible request, authorization, mutation, delivery, backlog, and age metrics.
@@ -12,6 +12,20 @@
 - Allowlisted failure codes with fixed generic persisted messages.
 - Reasoned manager API and CLI replay with immutable attribution and a 10-cycle ceiling.
 - Migration checksums and advisory locking.
+
+## Operational endpoints
+
+| Process | Direct-run default | Compose host default | Routes |
+|---|---|---|---|
+| API public | `HTTP_ADDR=:8080` | `127.0.0.1:8081` | authenticated `/v1/*` only |
+| API admin | `API_ADMIN_ADDR=127.0.0.1:9090` | `127.0.0.1:9090` | `/health/live`, `/health/ready`, `/metrics` |
+| Worker admin | `WORKER_HTTP_ADDR=127.0.0.1:9091` | `127.0.0.1:9091` | `/health/live`, `/health/ready`, `/metrics` |
+
+Administrative endpoints are unauthenticated. Bind them to a private interface or place them behind authenticated operational infrastructure in production. Compose uses `:9090` and `:9091` inside containers because container-loopback sockets cannot be forwarded, while every published host port is restricted to `127.0.0.1`. Loopback defaults are not a substitute for production network policy.
+
+HTTP request metrics accept only the canonical methods `GET`, `POST`, `PUT`, and `OTHER` and the documented business route templates plus `/unknown`. Each process retains at most 1,024 `(method, route, status)` keys. A rejected new key increments label-free `work_management_http_series_dropped_total`; existing keys continue updating.
+
+Notification backlog gauges are cached for five seconds per process, limiting healthy refresh work to at most one PostgreSQL query per five seconds per API or worker process. One expired scrape refreshes synchronously; concurrent scrapes serve the last completed state without waiting. A failed refresh keeps the last successful backlog values, sets `work_management_metrics_scrape_error` to 1, and waits five seconds before retrying. When that error is 1, a displayed backlog gauge can therefore be older than five seconds.
 
 ## Failure modes
 
@@ -23,6 +37,8 @@
 | Hot work item | Explicit `CONCURRENT_MODIFICATION` | conflict logs/metrics | Refetch and retry intended command |
 | Poison recipient/payload | Delivery becomes `FAILED` | failed gauge and attempts | Correct data/configuration and replay |
 | Provider accepted email before crash | Possible duplicate on retry | abandoned attempt plus provider evidence | Reconcile manually; use provider idempotency later |
+| Backlog metric refresh fails | Last-good gauges become stale | `work_management_metrics_scrape_error == 1` | Restore database access; confirm a later successful refresh clears the gauge |
+| HTTP series cap reached | New label keys are not recorded | `work_management_http_series_dropped_total` increases | Investigate unexpected methods/routes/statuses; do not raise the cap without a cardinality review |
 
 ## SLO candidates
 
@@ -33,7 +49,9 @@
 
 ## Alert candidates
 
-Page on database unavailability, growing notification age, no successful attempts while backlog exists, migration failure, or broad assignment failure. Handle isolated invalid recipients and moderate conflict increases during business hours.
+Page on database unavailability, growing notification age, no successful attempts while backlog exists, migration failure, broad assignment failure, or sustained `work_management_metrics_scrape_error`. Alert on any increase of `work_management_http_series_dropped_total`; it indicates the fixed HTTP metric key budget was exhausted. Handle isolated invalid recipients and moderate conflict increases during business hours.
+
+For a scrape-error alert, check the admin listener's readiness, PostgreSQL connectivity, and scrape concurrency. Backlog values are deliberately retained, not reset, during the failure. For a dropped-series alert, inspect access logs for unexpected methods, unknown routes, or a very broad set of status codes; rejected label keys are never retained in memory.
 
 ## Notification recovery
 
@@ -73,4 +91,4 @@ The initial migration is intentionally edited for this clean-schema submission. 
 
 ## Before production
 
-Replace development authentication with OIDC/JWT verification, use managed HA PostgreSQL, secret management, TLS, private operational endpoints, rate limiting, distributed tracing, load/failure testing, runbooks, on-call ownership, provider delivery webhooks, signed artifacts, SBOM/dependency scanning, tenant isolation, retention policy, and explicit administrative correction commands.
+Replace development authentication with OIDC/JWT verification, use managed HA PostgreSQL, secret management, TLS, private network policy or an authenticated proxy for the implemented administrative listeners, rate limiting, distributed tracing, load/failure testing, runbooks, on-call ownership, provider delivery webhooks, signed artifacts, SBOM/dependency scanning, tenant isolation, retention policy, and explicit administrative correction commands.

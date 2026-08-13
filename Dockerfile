@@ -16,5 +16,5 @@ WORKDIR /app
 COPY --from=build /out/ /app/
 COPY migrations/ /app/migrations/
 USER app
-EXPOSE 8080 9091
+EXPOSE 8080 9090 9091
 ENTRYPOINT ["/app/api"]
