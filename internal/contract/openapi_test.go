@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -101,8 +102,8 @@ func TestTask2OpenAPIContract(t *testing.T) {
 
 	assignment := object(t, object(t, paths, "/v1/work-items/{work_item_id}/assignment"), "put")
 	assignmentOK := object(t, object(t, assignment, "responses"), "200")
-	if !hasHeader(assignmentOK, "Idempotent-Replayed") {
-		t.Fatal("assignment 200 omits Idempotent-Replayed")
+	if err := validateRequiredHeader(document, assignmentOK, "Idempotent-Replayed"); err != nil {
+		t.Fatal(err)
 	}
 
 	for path, rawPath := range paths {
@@ -119,16 +120,16 @@ func TestTask2OpenAPIContract(t *testing.T) {
 			for status, rawResponse := range responses {
 				if len(status) > 0 && status[0] == '2' {
 					response := rawResponse.(map[string]any)
-					if !hasHeader(response, "X-Request-ID") {
-						t.Errorf("%s %s %s omits X-Request-ID", method, path, status)
+					if err := validateRequiredHeader(document, response, "X-Request-ID"); err != nil {
+						t.Errorf("%s %s %s: %v", method, path, status, err)
 					}
 				}
 			}
 		}
 	}
 	for name, rawResponse := range object(t, components, "responses") {
-		if !hasHeader(rawResponse.(map[string]any), "X-Request-ID") {
-			t.Errorf("component response %s omits X-Request-ID", name)
+		if err := validateRequiredHeader(document, rawResponse.(map[string]any), "X-Request-ID"); err != nil {
+			t.Errorf("component response %s: %v", name, err)
 		}
 	}
 }
@@ -157,15 +158,6 @@ func object(t *testing.T, source map[string]any, key string) map[string]any {
 		t.Fatalf("%s is not an object: %T", key, source[key])
 	}
 	return value
-}
-
-func hasHeader(response map[string]any, name string) bool {
-	headers, ok := response["headers"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = headers[name]
-	return ok
 }
 
 func stringSlice(value any) []string {
@@ -265,11 +257,13 @@ func TestOpenAPIContract(t *testing.T) {
 			}
 			for status, rawResponse := range responses {
 				response := resolveResponse(t, document, rawResponse)
-				if !hasHeader(response, "X-Request-ID") {
-					t.Errorf("%s %s %s omits X-Request-ID", strings.ToUpper(method), path, status)
+				if err := validateRequiredHeader(document, response, "X-Request-ID"); err != nil {
+					t.Errorf("%s %s %s: %v", strings.ToUpper(method), path, status, err)
 				}
-				if status == "401" && !hasHeader(response, "WWW-Authenticate") {
-					t.Errorf("%s %s 401 omits WWW-Authenticate", strings.ToUpper(method), path)
+				if status == "401" {
+					if err := validateRequiredHeader(document, response, "WWW-Authenticate"); err != nil {
+						t.Errorf("%s %s 401: %v", strings.ToUpper(method), path, err)
+					}
 				}
 				if len(status) == 3 && (status[0] == '4' || status[0] == '5') {
 					content := object(t, response, "content")
@@ -313,16 +307,138 @@ func TestOpenAPIContract(t *testing.T) {
 		{path: "/v1/work-items/{work_item_id}/complete", method: "post", status: "200", header: "ETag"},
 		{path: "/v1/work-items/{work_item_id}/complete", method: "post", status: "200", header: "Idempotent-Replayed"},
 	} {
-		response := object(t, object(t, object(t, object(t, paths, required.path), required.method), "responses"), required.status)
-		if !hasHeader(response, required.header) {
-			t.Errorf("%s %s %s omits %s", strings.ToUpper(required.method), required.path, required.status, required.header)
+		rawResponse := object(t, object(t, object(t, object(t, paths, required.path), required.method), "responses"), required.status)
+		response := resolveResponse(t, document, rawResponse)
+		if err := validateRequiredHeader(document, response, required.header); err != nil {
+			t.Errorf("%s %s %s: %v", strings.ToUpper(required.method), required.path, required.status, err)
 		}
 	}
-	header := object(t, object(t, components, "headers"), "IdempotentReplayed")
-	schema := object(t, header, "schema")
-	if schema["type"] != "string" || !sameStringSet(stringSlice(schema["enum"]), []string{"true"}) {
-		t.Fatalf("IdempotentReplayed schema=%v", schema)
+}
+
+func TestOpenAPIRequiredHeadersFailClosed(t *testing.T) {
+	document := loadOpenAPIDocument(t)
+	responses := object(t, object(t, document, "components"), "responses")
+	invalidInput := object(t, responses, "InvalidInput")
+	authenticationRequired := object(t, responses, "AuthenticationRequired")
+	paths := object(t, document, "paths")
+	created := object(t, object(t, object(t, object(t, paths, "/v1/work-items"), "post"), "responses"), "201")
+	replayed := object(t, object(t, object(t, object(t, paths, "/v1/work-items"), "post"), "responses"), "200")
+
+	for _, check := range []struct {
+		name     string
+		response map[string]any
+		header   string
+	}{
+		{name: "request id", response: invalidInput, header: "X-Request-ID"},
+		{name: "authentication challenge", response: authenticationRequired, header: "WWW-Authenticate"},
+		{name: "entity tag", response: created, header: "ETag"},
+		{name: "idempotency replay", response: replayed, header: "Idempotent-Replayed"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			if err := validateRequiredHeader(document, check.response, check.header); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
+
+	tests := []struct {
+		name, header, want string
+		mutate             func(map[string]any) map[string]any
+	}{
+		{
+			name: "dangling local ref", header: "X-Request-ID", want: "missing segment",
+			mutate: func(document map[string]any) map[string]any {
+				response := object(t, object(t, object(t, document, "components"), "responses"), "InvalidInput")
+				object(t, response, "headers")["X-Request-ID"] = map[string]any{"$ref": "#/components/headers/DOES_NOT_EXIST"}
+				return response
+			},
+		},
+		{
+			name: "cyclic local refs", header: "X-Request-ID", want: "cyclic header ref",
+			mutate: func(document map[string]any) map[string]any {
+				components := object(t, document, "components")
+				headers := object(t, components, "headers")
+				headers["LoopA"] = map[string]any{"$ref": "#/components/headers/LoopB"}
+				headers["LoopB"] = map[string]any{"$ref": "#/components/headers/LoopA"}
+				response := object(t, object(t, components, "responses"), "InvalidInput")
+				object(t, response, "headers")["X-Request-ID"] = map[string]any{"$ref": "#/components/headers/LoopA"}
+				return response
+			},
+		},
+		{
+			name: "nonlocal ref", header: "X-Request-ID", want: "unsupported non-local header ref",
+			mutate: func(document map[string]any) map[string]any {
+				response := object(t, object(t, object(t, document, "components"), "responses"), "InvalidInput")
+				object(t, response, "headers")["X-Request-ID"] = map[string]any{"$ref": "https://example.test/header.json"}
+				return response
+			},
+		},
+		{
+			name: "malformed local ref", header: "X-Request-ID", want: "malformed header ref",
+			mutate: func(document map[string]any) map[string]any {
+				response := object(t, object(t, object(t, document, "components"), "responses"), "InvalidInput")
+				object(t, response, "headers")["X-Request-ID"] = map[string]any{"$ref": "#components/headers/XRequestID"}
+				return response
+			},
+		},
+		{
+			name: "request id semantics", header: "X-Request-ID", want: "X-Request-ID schema",
+			mutate: func(document map[string]any) map[string]any {
+				components := object(t, document, "components")
+				object(t, object(t, object(t, components, "headers"), "XRequestID"), "schema")["maxLength"] = float64(129)
+				return object(t, object(t, components, "responses"), "InvalidInput")
+			},
+		},
+		{
+			name: "authentication semantics", header: "WWW-Authenticate", want: "WWW-Authenticate schema",
+			mutate: func(document map[string]any) map[string]any {
+				components := object(t, document, "components")
+				object(t, object(t, object(t, components, "headers"), "WWWAuthenticate"), "schema")["enum"] = []any{"Basic"}
+				return object(t, object(t, components, "responses"), "AuthenticationRequired")
+			},
+		},
+		{
+			name: "entity tag semantics", header: "ETag", want: "ETag schema",
+			mutate: func(document map[string]any) map[string]any {
+				response := object(t, object(t, object(t, object(t, document, "paths"), "/v1/work-items"), "post"), "responses")
+				created := object(t, response, "201")
+				object(t, object(t, object(t, created, "headers"), "ETag"), "schema")["pattern"] = "broken"
+				return created
+			},
+		},
+		{
+			name: "idempotency semantics", header: "Idempotent-Replayed", want: "Idempotent-Replayed schema",
+			mutate: func(document map[string]any) map[string]any {
+				components := object(t, document, "components")
+				object(t, object(t, object(t, components, "headers"), "IdempotentReplayed"), "schema")["enum"] = []any{"false"}
+				response := object(t, object(t, object(t, object(t, document, "paths"), "/v1/work-items"), "post"), "responses")
+				return object(t, response, "200")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := cloneOpenAPIDocument(t, document)
+			response := test.mutate(mutated)
+			err := validateRequiredHeader(mutated, response, test.header)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func cloneOpenAPIDocument(t *testing.T, document map[string]any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clone map[string]any
+	if err = json.Unmarshal(encoded, &clone); err != nil {
+		t.Fatal(err)
+	}
+	return clone
 }
 
 func resolveResponse(t *testing.T, document map[string]any, raw any) map[string]any {
@@ -343,6 +459,100 @@ func resolveResponse(t *testing.T, document map[string]any, raw any) map[string]
 		seen[ref] = true
 		raw = resolveLocalRef(t, document, ref)
 	}
+}
+
+func validateRequiredHeader(document, response map[string]any, name string) error {
+	headers, ok := response["headers"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("response omits %s", name)
+	}
+	raw, ok := headers[name]
+	if !ok {
+		return fmt.Errorf("response omits %s", name)
+	}
+	header, err := resolveReferencedObject(document, raw, "header")
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	rawSchema, ok := header["schema"]
+	if !ok {
+		return fmt.Errorf("%s header omits schema", name)
+	}
+	schema, err := resolveReferencedObject(document, rawSchema, "header schema")
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+
+	switch name {
+	case "X-Request-ID":
+		if schema["type"] != "string" || schema["minLength"] != float64(1) || schema["maxLength"] != float64(128) {
+			return fmt.Errorf("X-Request-ID schema=%v", schema)
+		}
+	case "WWW-Authenticate":
+		if schema["type"] != "string" || !equalStrings(stringSlice(schema["enum"]), []string{`Bearer realm="work-management-api"`}) {
+			return fmt.Errorf("WWW-Authenticate schema=%v", schema)
+		}
+	case "ETag":
+		if schema["type"] != "string" || schema["pattern"] != `^"[1-9][0-9]*"$` {
+			return fmt.Errorf("ETag schema=%v", schema)
+		}
+	case "Idempotent-Replayed":
+		if schema["type"] != "string" || !equalStrings(stringSlice(schema["enum"]), []string{"true"}) {
+			return fmt.Errorf("Idempotent-Replayed schema=%v", schema)
+		}
+	default:
+		return fmt.Errorf("unsupported required header %q", name)
+	}
+	return nil
+}
+
+func resolveReferencedObject(document map[string]any, raw any, kind string) (map[string]any, error) {
+	seen := map[string]bool{}
+	for {
+		object, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s is %T", kind, raw)
+		}
+		rawRef, referenced := object["$ref"]
+		if !referenced {
+			return object, nil
+		}
+		ref, ok := rawRef.(string)
+		if !ok || ref == "" || !strings.HasPrefix(ref, "#/") {
+			if text, isString := rawRef.(string); isString && strings.Contains(text, "://") {
+				return nil, fmt.Errorf("unsupported non-local %s ref %q", kind, text)
+			}
+			return nil, fmt.Errorf("malformed %s ref %v", kind, rawRef)
+		}
+		if seen[ref] {
+			return nil, fmt.Errorf("cyclic %s ref %q", kind, ref)
+		}
+		seen[ref] = true
+		var err error
+		raw, err = lookupLocalRef(document, ref)
+		if err != nil {
+			return nil, fmt.Errorf("%s ref %q: %w", kind, ref, err)
+		}
+	}
+}
+
+func lookupLocalRef(document map[string]any, ref string) (any, error) {
+	var current any = document
+	for _, escaped := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		if escaped == "" {
+			return nil, fmt.Errorf("empty path segment")
+		}
+		key := strings.ReplaceAll(strings.ReplaceAll(escaped, "~1", "/"), "~0", "~")
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("traverses non-object at %q", key)
+		}
+		current, ok = object[key]
+		if !ok {
+			return nil, fmt.Errorf("missing segment %q", key)
+		}
+	}
+	return current, nil
 }
 
 func resolveLocalRef(t *testing.T, document map[string]any, ref string) any {

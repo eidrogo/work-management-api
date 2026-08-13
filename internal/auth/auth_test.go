@@ -11,18 +11,16 @@ import (
 
 func TestHashTokenIsDeterministic(t *testing.T) {
 	t.Parallel()
-	first := HashToken("dev-manager-token")
-	second := HashToken("dev-manager-token")
-	if first != second {
-		t.Fatal("same token produced different hashes")
-	}
-	if HashToken("a") == HashToken("b") {
-		t.Fatal("different tokens produced the same hash")
+	const want = "2fb45d55493f2a01708bf8079a547104e5d60bd027b54ec838971fd0ecbedb54"
+	if got := HashToken("dev-manager-token"); got != want {
+		t.Fatalf("HashToken()=%q want SHA-256 %q", got, want)
 	}
 }
 
 func TestAuthenticateHashesTokenAndMapsStoreFailures(t *testing.T) {
 	now := time.Date(2026, 8, 12, 12, 30, 0, 0, time.UTC)
+	const token = "dev-manager-token"
+	const wantHash = "2fb45d55493f2a01708bf8079a547104e5d60bd027b54ec838971fd0ecbedb54"
 	tests := []struct {
 		name      string
 		token     string
@@ -32,11 +30,11 @@ func TestAuthenticateHashesTokenAndMapsStoreFailures(t *testing.T) {
 		wantStore bool
 	}{
 		{name: "blank token", token: " \t", wantErr: ErrAuthenticationRequired},
-		{name: "not found", token: "missing", storeErr: ErrPrincipalNotFound, wantErr: ErrInvalidCredentials, wantStore: true},
-		{name: "store failure", token: "valid", storeErr: errors.New("database unavailable"), wantErr: ErrAuthenticationUnavailable, wantStore: true},
-		{name: "missing principal id", token: "valid", principal: Principal{Role: RoleManager}, wantErr: ErrInvalidCredentials, wantStore: true},
-		{name: "invalid principal role", token: "valid", principal: Principal{ID: "user", Role: Role("ADMIN")}, wantErr: ErrInvalidCredentials, wantStore: true},
-		{name: "valid", token: "valid", principal: Principal{ID: "user", Role: RoleWorker}, wantStore: true},
+		{name: "not found", token: token, storeErr: ErrPrincipalNotFound, wantErr: ErrInvalidCredentials, wantStore: true},
+		{name: "store failure", token: token, storeErr: errors.New("database unavailable"), wantErr: ErrAuthenticationUnavailable, wantStore: true},
+		{name: "missing principal id", token: token, principal: Principal{Role: RoleManager}, wantErr: ErrInvalidCredentials, wantStore: true},
+		{name: "invalid principal role", token: token, principal: Principal{ID: "user", Role: Role("ADMIN")}, wantErr: ErrInvalidCredentials, wantStore: true},
+		{name: "valid", token: token, principal: Principal{ID: "user", Role: RoleWorker}, wantStore: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,7 +47,7 @@ func TestAuthenticateHashesTokenAndMapsStoreFailures(t *testing.T) {
 			if store.called != test.wantStore {
 				t.Fatalf("store called=%v want=%v", store.called, test.wantStore)
 			}
-			if test.wantStore && (store.hash != HashToken(test.token) || !store.now.Equal(now)) {
+			if test.wantStore && (store.hash != wantHash || !store.now.Equal(now)) {
 				t.Fatalf("hash=%q now=%s", store.hash, store.now)
 			}
 			if test.wantErr == nil && principal != test.principal {

@@ -122,7 +122,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "X-Request-ID": {
@@ -143,7 +144,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "Idempotent-Replayed": {
@@ -217,7 +219,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "X-Request-ID": {
@@ -298,7 +301,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "X-Request-ID": {
@@ -381,7 +385,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "X-Request-ID": {
@@ -458,7 +463,8 @@
               "ETag": {
                 "description": "Quoted work-item version",
                 "schema": {
-                  "type": "string"
+                  "type": "string",
+                  "pattern": "^\"[1-9][0-9]*\"$"
                 }
               },
               "X-Request-ID": {
@@ -1662,7 +1668,10 @@
       "WWWAuthenticate": {
         "description": "Bearer authentication challenge.",
         "schema": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "Bearer realm=\"work-management-api\""
+          ]
         }
       }
     }

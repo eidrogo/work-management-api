@@ -4,7 +4,7 @@ set -Eeuo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repository_root"
 
-for tool in docker curl jq go git; do
+for tool in docker curl jq go git ps; do
 	command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
 done
 docker compose version
@@ -44,6 +44,8 @@ else
 	keep_logs=0
 fi
 mutated=0
+active_child_pid=
+active_child_pgid=
 
 cleanup() {
 	local status=$?
@@ -80,19 +82,42 @@ cleanup() {
 	exit "$status"
 }
 on_signal() {
-	local signal_status=$1
+	local signal_name=$1 signal_status=$2
+	local pid="${active_child_pid:-}" pgid="${active_child_pgid:-}" killer_pid=
 	trap - INT TERM
+	set +e
+	if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+		if [[ "$pgid" =~ ^[0-9]+$ ]] && [[ "$pgid" == "$pid" ]]; then
+			kill -"$signal_name" -- "-$pgid" 2>/dev/null
+		else
+			kill -"$signal_name" "$pid" 2>/dev/null
+		fi
+		(
+			sleep 2
+			if [[ "$pgid" =~ ^[0-9]+$ ]] && [[ "$pgid" == "$pid" ]]; then
+				kill -KILL -- "-$pgid" 2>/dev/null
+			else
+				kill -KILL "$pid" 2>/dev/null
+			fi
+		) &
+		killer_pid=$!
+		wait "$pid" 2>/dev/null
+		if [[ "$pgid" =~ ^[0-9]+$ ]] && [[ "$pgid" == "$pid" ]]; then
+			kill -KILL -- "-$pgid" 2>/dev/null
+		fi
+		kill "$killer_pid" 2>/dev/null
+		wait "$killer_pid" 2>/dev/null
+	fi
+	active_child_pid=
+	active_child_pgid=
 	exit "$signal_status"
 }
 trap cleanup EXIT
-trap 'on_signal 130' INT
-trap 'on_signal 143' TERM
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 
 "${compose[@]}" config --quiet
 echo "PASS: verification Compose config is valid"
-
-mutated=1
-"${compose[@]}" up --detach --wait --wait-timeout 120 postgres
 
 resolve_port() {
 	local service=$1 target=$2 mapping
@@ -103,6 +128,45 @@ resolve_port() {
 	fi
 	printf '%s\n' "${mapping##*:}"
 }
+
+run_owned_child() {
+	local output=$1 monitor_was_set=0 observed_pgid shell_pgid status
+	shift
+	case $- in
+		*m*) monitor_was_set=1 ;;
+	esac
+	set -m
+	if [[ "$output" == "-" ]]; then
+		"$@" &
+	else
+		"$@" >"$output" 2>&1 &
+	fi
+	active_child_pid=$! active_child_pgid=$!
+	observed_pgid="$(ps -o pgid= -p "$active_child_pid" 2>/dev/null | tr -d '[:space:]')" || observed_pgid=
+	if ((monitor_was_set == 0)); then
+		set +m
+	fi
+	shell_pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')" || shell_pgid=
+	if [[ ! "$observed_pgid" =~ ^[0-9]+$ ]] || [[ "$observed_pgid" != "$active_child_pid" ]] || [[ "$observed_pgid" == "$shell_pgid" ]]; then
+		if kill -0 "$active_child_pid" 2>/dev/null; then
+			kill -TERM "$active_child_pid" 2>/dev/null || true
+			wait "$active_child_pid" 2>/dev/null || true
+			active_child_pid=
+			active_child_pgid=
+			echo "Could not isolate verification child in its own process group" >&2
+			return 1
+		fi
+		active_child_pgid=
+	fi
+	wait "$active_child_pid" 2>/dev/null
+	status=$?
+	active_child_pid=
+	active_child_pgid=
+	return "$status"
+}
+
+mutated=1
+run_owned_child - "${compose[@]}" up --detach --wait --wait-timeout 120 postgres
 
 postgres_port="$(resolve_port postgres 5432)"
 export TEST_DATABASE_URL="postgres://work:work@127.0.0.1:${postgres_port}/work_management?sslmode=disable"
@@ -118,7 +182,7 @@ run_test_suite() {
 	shift
 	local log="$log_dir/$label.log" status skip_count pass_count package_count
 	set +e
-	"$@" >"$log" 2>&1
+	run_owned_child "$log" "$@"
 	status=$?
 	set -e
 	if ((status != 0)); then
@@ -150,7 +214,7 @@ if [[ "${VERIFY_COMPOSE_INJECT_FAILURE:-}" == "after-tests" ]]; then
 	exit 98
 fi
 
-"${compose[@]}" up --build --detach --wait --wait-timeout 180
+run_owned_child - "${compose[@]}" up --build --detach --wait --wait-timeout 180
 
 assert_completed_service() {
 	local service=$1 container state
@@ -201,6 +265,6 @@ for path in /health/live /health/ready /metrics; do
 done
 echo "PASS: public API serves business routes and excludes operational routes"
 
-API_URL="$api_url" API_ADMIN_URL="$api_admin_url" MAILPIT_URL="http://127.0.0.1:$mailpit_port" ./scripts/demo.sh
+run_owned_child - env API_URL="$api_url" API_ADMIN_URL="$api_admin_url" MAILPIT_URL="http://127.0.0.1:$mailpit_port" ./scripts/demo.sh
 echo "PASS: live manager/worker/Mailpit/durable-state demo completed"
 echo "PASS: authoritative Compose verification completed"

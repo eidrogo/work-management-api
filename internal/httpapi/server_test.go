@@ -127,9 +127,22 @@ func TestHTTPPublicMethodsErrorsAndHeaders(t *testing.T) {
 		{name: "unknown route", method: http.MethodGet, path: "/v1/unknown", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
 		{name: "unknown action", method: http.MethodGet, path: "/v1/work-items/" + itemID + "/unknown", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
 		{name: "deep route", method: http.MethodGet, path: "/v1/work-items/" + itemID + "/history/deep", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "work item collection trailing slash", method: http.MethodGet, path: "/v1/work-items/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "work item create trailing slash", method: http.MethodPost, path: "/v1/work-items/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "own work item collection trailing slash", method: http.MethodGet, path: "/v1/me/work-items/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "work item trailing slash", method: http.MethodGet, path: "/v1/work-items/" + itemID + "/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "assignment trailing slash", method: http.MethodPut, path: "/v1/work-items/" + itemID + "/assignment/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "start trailing slash", method: http.MethodPost, path: "/v1/work-items/" + itemID + "/start/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "complete trailing slash", method: http.MethodPost, path: "/v1/work-items/" + itemID + "/complete/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "history trailing slash", method: http.MethodGet, path: "/v1/work-items/" + itemID + "/history/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "notification collection trailing slash", method: http.MethodGet, path: "/v1/notifications/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "notification trailing slash", method: http.MethodGet, path: "/v1/notifications/" + notificationID + "/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
+		{name: "notification replay trailing slash", method: http.MethodPost, path: "/v1/notifications/" + notificationID + "/replay/", code: "RESOURCE_NOT_FOUND", wantStatus: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := newRecordingServer(t, &recordingWorkItems{}, &recordingNotifications{})
+			workApplication := &recordingWorkItems{}
+			notificationApplication := &recordingNotifications{}
+			server := newRecordingServer(t, workApplication, notificationApplication)
 			request := httptest.NewRequest(test.method, test.path, nil)
 			request.Header.Set("Authorization", "Bearer valid")
 			request.Header.Set("X-Request-ID", "request-route-contract")
@@ -139,11 +152,15 @@ func TestHTTPPublicMethodsErrorsAndHeaders(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 				t.Fatal(err)
 			}
-			if response.Code != test.wantStatus || envelope.Error.Code != test.code || envelope.Error.RequestID != response.Header().Get("X-Request-ID") {
+			requestID := response.Header().Get("X-Request-ID")
+			if response.Code != test.wantStatus || envelope.Error.Code != test.code || requestID != "request-route-contract" || envelope.Error.RequestID != requestID {
 				t.Fatalf("status=%d body=%#v", response.Code, envelope)
 			}
 			if test.allowed != "" && envelope.Error.Details["allowed"] != test.allowed {
 				t.Fatalf("allowed=%v want=%q", envelope.Error.Details["allowed"], test.allowed)
+			}
+			if workApplication.call != "" || notificationApplication.call != "" {
+				t.Fatalf("unexpected application calls: work=%q notification=%q", workApplication.call, notificationApplication.call)
 			}
 		})
 	}

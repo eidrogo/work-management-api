@@ -131,6 +131,108 @@ PASS
 ok  github.com/eidrogo/work-management-api/internal/contract
 ```
 
+## FAIL then PASS — independent authentication hash boundary
+
+Command:
+
+```bash
+CGO_ENABLED=0 go test ./internal/auth \
+  -run 'TestHashTokenIsDeterministic|TestAuthenticateHashesTokenAndMapsStoreFailures' \
+  -count=1 -v
+```
+
+With `HashToken` temporarily mutated to hash a prefixed token, the fixed test failed against the independent known SHA-256 digest and the exact store argument:
+
+```text
+auth_test.go:51: hash="54b3ec7ead5c67b8ed002806161f7550b3451b5fa3d358a40268475d9925246f"
+auth_test.go:16: HashToken()="54b3ec7ead5c67b8ed002806161f7550b3451b5fa3d358a40268475d9925246f" want SHA-256 "2fb45d55493f2a01708bf8079a547104e5d60bd027b54ec838971fd0ecbedb54"
+FAIL
+RED CONFIRMED: SHA-256 mutation rejected with test exit 1
+```
+
+After restoring the SHA-256 implementation:
+
+```text
+--- PASS: TestHashTokenIsDeterministic
+--- PASS: TestAuthenticateHashesTokenAndMapsStoreFailures
+PASS
+ok  github.com/eidrogo/work-management-api/internal/auth
+```
+
+## FAIL then PASS — exact trailing-slash route rejection
+
+Command:
+
+```bash
+CGO_ENABLED=0 go test ./internal/httpapi \
+  -run '^TestHTTPPublicMethodsErrorsAndHeaders$' -count=1 -v
+```
+
+Before the exact-route guard, authenticated dynamic item, notification, and action aliases reached the application and violated the stable 404 expectation:
+
+```text
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/work_item_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/assignment_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/start_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/complete_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/history_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/notification_trailing_slash
+--- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/notification_replay_trailing_slash
+FAIL
+```
+
+The passing rerun covered all three collections, both dynamic resource families, and every public action; every case asserted a correlated 404 and zero application calls:
+
+```text
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/work_item_collection_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/work_item_create_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/own_work_item_collection_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/work_item_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/assignment_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/start_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/complete_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/history_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/notification_collection_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/notification_trailing_slash
+--- PASS: TestHTTPPublicMethodsErrorsAndHeaders/notification_replay_trailing_slash
+PASS
+```
+
+## FAIL then PASS — fail-closed OpenAPI header references
+
+Commands:
+
+```bash
+CGO_ENABLED=0 go test ./internal/contract -count=1 -v
+CGO_ENABLED=0 go test ./internal/contract \
+  -run 'TestOpenAPIContract|TestOpenAPIRequiredHeadersFailClosed' \
+  -count=1 -v
+```
+
+Changing every `#/components/headers/XRequestID` reference to a nonexistent local component still passed the prior contract, proving the false positive:
+
+```text
+--- PASS: TestOpenAPIContract
+PASS
+RED CONFIRMED: dangling XRequestID references still passed the existing OpenAPI contract
+```
+
+The repaired gate recursively resolves required header objects and schemas and rejects dangling, cyclic, non-local, and malformed references. It also pins the X-Request-ID bounds, exact bearer challenge, quoted positive ETag pattern, and replay value:
+
+```text
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/dangling_local_ref
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/cyclic_local_refs
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/nonlocal_ref
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/malformed_local_ref
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/request_id_semantics
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/authentication_semantics
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/entity_tag_semantics
+--- PASS: TestOpenAPIRequiredHeadersFailClosed/idempotency_semantics
+PASS
+```
+
+Repeating the dangling-reference mutation then failed every affected operation with `missing segment "DOES_NOT_EXIST"` and exited 1.
+
 ## PASS — real SMTP transport boundaries
 
 Command:
@@ -205,11 +307,13 @@ No high-confidence secret patterns found.
 0 issues.
 ```
 
-## PASS — injected-failure and signal cleanup propagation
+## PASS — prompt owned-child signal and cleanup propagation
 
 Commands:
 
 ```bash
+make verify-signal-check
+
 set +e
 VERIFY_COMPOSE_PROJECT="$PROJECT" \
 VERIFY_COMPOSE_INJECT_FAILURE=after-postgres \
@@ -226,7 +330,7 @@ test -z "$({
 
 VERIFY_COMPOSE_PROJECT="$SIGNAL_PROJECT" ./scripts/verify-compose.sh >"$LOG" 2>&1 &
 pid=$!
-# After the PostgreSQL PASS line appeared:
+# After the PostgreSQL PASS line and owned Go test PID/PGID appeared:
 kill -TERM "$pid"
 set +e
 wait "$pid"
@@ -243,12 +347,28 @@ test -z "$({
 Evidence:
 
 ```text
+PASS: owned test child status 42 propagated unchanged and cleanup reaped the child
+PASS: SIGTERM reached the owned test process group, reaped it, and began Compose cleanup promptly (3 polls)
+PASS: SIGINT reached the owned test process group, reaped it, and began Compose cleanup promptly (3 polls)
 Injected verification failure after PostgreSQL startup
 PASS: Compose cleanup removed all project containers, networks, and volumes
-PASS: injected verification failure propagated with exit 97 and zero labeled resources
+exit=97
+containers=0
+networks=0
+volumes=0
+PASS: injected exit 97 propagated and cleanup left zero labeled resources
 PASS: Compose cleanup removed all project containers, networks, and volumes
-PASS: SIGTERM propagated as exit 143 and left zero labeled resources
+child_pid=65339
+child_pgid=65339
+exit=143
+polls_10ms=42
+containers=0
+networks=0
+volumes=0
+PASS: real SIGTERM promptly reaped owned test group and cleaned Compose (42 10ms polls)
 ```
+
+The deterministic regression runs through the same generic owned-child wrapper used for both Compose startup phases, normal/race Go suites, and the live demo. `compose-smoke` depends on this regression, while `verify-full` reaches both the regression and Compose authority exactly once through `compose-smoke`.
 
 ## PASS — complete fresh Compose authority
 
@@ -263,8 +383,8 @@ Evidence:
 ```text
 PASS: verification Compose config is valid
 PASS: PostgreSQL test database is fresh and loopback-published
-PASS: go-test-normal completed with zero skips (120 top-level tests; 17 packages)
-PASS: go-test-race completed with zero skips (120 top-level tests; 17 packages)
+PASS: go-test-normal completed with zero skips (121 top-level tests; 17 packages)
+PASS: go-test-race completed with zero skips (121 top-level tests; 17 packages)
 PASS: migrate and seed completed successfully
 PASS: all six published ports are ephemeral IPv4 loopback mappings
 PASS: API and worker admin live, ready, and metrics endpoints respond
@@ -280,3 +400,35 @@ PASS: live manager/worker/Mailpit/durable-state demo completed
 PASS: authoritative Compose verification completed
 PASS: Compose cleanup removed all project containers, networks, and volumes
 ```
+
+## PASS — final post-fix authority and clean tree
+
+Command:
+
+```bash
+set -o pipefail
+PATH=/tmp/work-management-task2-bin:$PATH make verify-full 2>&1 |
+  tee /tmp/work-management-api-task-4-fix1-evidence/21-final-make-verify-full.log
+```
+
+Stable final evidence:
+
+```text
+all modules verified
+0 issues.
+No high-confidence secret patterns found.
+PASS: owned test child status 42 propagated unchanged and cleanup reaped the child
+PASS: SIGTERM reached the owned test process group, reaped it, and began Compose cleanup promptly
+PASS: SIGINT reached the owned test process group, reaped it, and began Compose cleanup promptly
+PASS: go-test-normal completed with zero skips (121 top-level tests; 17 packages)
+PASS: go-test-race completed with zero skips (121 top-level tests; 17 packages)
+PASS: Mailpit accepted exactly one current SMTP transaction
+PASS: durable SENT detail matches the current Mailpit Message-ID and attempt
+PASS: authoritative Compose verification completed
+PASS: Compose cleanup removed all project containers, networks, and volumes
+git diff --check
+git diff --exit-code -- .
+git diff --cached --exit-code -- .
+```
+
+Result: exit 0. The final `clean-check` also required `git status --porcelain --untracked-files=all` to be empty; the subsequent explicit status check was empty.

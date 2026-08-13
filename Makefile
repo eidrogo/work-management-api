@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
-.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race test-db test-db-race lint build openapi-check secret-check compose-config-check clean-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
+.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race test-db test-db-race lint build openapi-check secret-check compose-config-check verify-signal-check clean-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
 help:
 	@printf '%s\n' 'make up - start the complete stack' 'make demo - run the documented flow' 'make verify - quick checks (DB-gated tests may skip)' 'make verify-full - authoritative clean-tree Compose verification'
 fmt:
@@ -41,16 +41,19 @@ secret-check:
 	./scripts/check-secrets.sh
 compose-config-check:
 	./scripts/check-compose-config.sh
+verify-signal-check:
+	VERIFY_SIGNAL_TEST_CHILD_EXIT=42 ./scripts/test-verify-compose-signals.sh
+	VERIFY_SIGNAL_TEST_SIGNAL=TERM ./scripts/test-verify-compose-signals.sh
+	VERIFY_SIGNAL_TEST_SIGNAL=INT ./scripts/test-verify-compose-signals.sh
 clean-check:
 	git diff --check
 	git diff --exit-code -- .
 	git diff --cached --exit-code -- .
 	@test -z "$$(git status --porcelain --untracked-files=all)" || (git status --short --untracked-files=all; exit 1)
 verify: fmt-check mod-verify tidy-check vet test test-race openapi-check secret-check build
-verify-full: fmt-check mod-verify tidy-check vet lint build openapi-check secret-check compose-config-check docker-build
-	./scripts/verify-compose.sh
+verify-full: fmt-check mod-verify tidy-check vet lint build openapi-check secret-check compose-config-check docker-build compose-smoke
 	$(MAKE) clean-check
-compose-smoke:
+compose-smoke: verify-signal-check
 	./scripts/verify-compose.sh
 migrate:
 	go run ./cmd/migrate up

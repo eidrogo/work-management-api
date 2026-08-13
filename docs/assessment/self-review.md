@@ -2,11 +2,11 @@
 
 ## 1. Review metadata and ancestry
 
-- Review date: 2026-08-12 (America/Argentina/Buenos_Aires).
+- Review date: 2026-08-13 (America/Argentina/Buenos_Aires).
 - Repository branch: `codex/submission-hardening`.
 - Task 4 base: `8827e53bff9e5e52058d0fd7b1f0af1b777b6ab6`.
 - Preserved hardening ancestry: Task 1 baseline `ed59c2c`, Task 2 `cf97716`, Task 3/base `8827e53`.
-- Review scope: the Task 4 candidate tree atop that base. A final hash is intentionally not embedded in a file that contributes to the hash.
+- Review scope: the Task 4 candidate tree and its focused independent-review fixes atop that base. A final hash is intentionally not embedded in a file that contributes to the hash.
 
 ## 2. Requirement traceability
 
@@ -18,9 +18,9 @@
 | Durable asynchronous SMTP | notification outbox/worker and `internal/platform/email` | real-wire plain, STARTTLS, implicit TLS, AUTH, certificate/timeout tests; Mailpit demo |
 | Traceable attempts and replay | append-only attempt/replay tables; manager API and CLI | notification integration tests; manager detail in demo; operations runbook |
 | Stable retry/idempotency/concurrency contract | immutable create snapshot, deterministic no-ops, ETags/`If-Match` | Task 2 persistence/domain tests; Task 4 HTTP headers and error matrix |
-| Complete public API contract | `api/openapi.json`; no admin routes | exhaustive `TestOpenAPIContract` over exact 11 operations/statuses/security/headers |
+| Complete public API contract | `api/openapi.json`; exact public router; no admin routes | exhaustive 11-operation OpenAPI matrix, recursive required-header validation, and authenticated trailing-slash/no-call matrix |
 | Private operational surface and bounded metrics | separate API/worker admin listeners, label cap, backlog cache | Task 3 tests plus live public/admin checks in `scripts/verify-compose.sh` |
-| Authoritative clean verification | unique Compose project and ephemeral loopback overlay | JSON normal/race no-skip audit, live demo, label cleanup; `verification.md` |
+| Authoritative clean verification | unique Compose project, ephemeral loopback overlay, owned child process groups | prompt INT/TERM regression, JSON normal/race no-skip audit, live demo, label cleanup; `verification.md` |
 | Explainable architecture and limitations | README, ADRs, architecture, operations, debrief | this review and `docs/debrief.md` |
 
 ## 3. Lifecycle, authorization, and invariants
@@ -39,7 +39,7 @@ The worker uses the production SMTP adapter in the live stack. Tests exercise pl
 
 ## 6. API, OpenAPI, and listener consistency
 
-The public router exposes exactly 11 method/path pairs across ten `/v1` templates. The contract test closes that set, requires the top-level bearer scheme without operation overrides, exact response statuses, JSON error envelopes, closed error schemas, response request IDs, 401 challenges, ETags, and idempotent replay headers. Operational paths are absent from the document and return stable public 404 envelopes. The API pre-binds public and admin sockets before serving; an occupied admin address closes the public listener. Readiness passes a two-second deadline to the dependency probe.
+The public router exposes exactly 11 method/path pairs across ten `/v1` templates. Authenticated collection, item, notification, and action paths with trailing slashes return the correlated stable 404 envelope before any application call. The contract test closes the documented operation set, requires the top-level bearer scheme without operation overrides, exact response statuses, JSON error envelopes, closed error schemas, response request IDs, 401 challenges, ETags, and idempotent replay headers. Every required header and nested schema reference is recursively resolved as a local reference; dangling, cyclic, non-local, and malformed references fail, while X-Request-ID bounds, the exact bearer challenge, quoted positive ETags, and replay `true` semantics are pinned. Operational paths are absent from the document and return stable public 404 envelopes. The API pre-binds public and admin sockets before serving; an occupied admin address closes the public listener. Readiness passes a two-second deadline to the dependency probe.
 
 ## 7. Schema, indexes, and migrations
 
@@ -49,7 +49,7 @@ Migration tests apply into isolated schemas, validate checks/foreign keys/trigge
 
 Administrative routes are isolated on API and worker admin listeners; Compose host publications are explicit IPv4 loopback. HTTP labels use closed method/route values and a 1,024-series retained cap. Backlog gauges use five-second single-refresh/last-good caching with an explicit scrape-error signal. Operations documentation now includes listener semantics, safe notification diagnosis/replay, worker recovery, migration/checksum guidance, backup/restore expectations, destructive cleanup warnings, troubleshooting, and production gaps.
 
-Production safeguards already present include rejection of development authentication in production, PostgreSQL `verify-full` requirements, verified SMTP policy, strict/bounded JSON, parameterized SQL, hashed local tokens, bounded timeouts, safe error contracts, loopback local publications, pinned dependencies/images/actions, and secret-pattern checks. These do not replace threat modeling, external identity, managed secrets, private ingress, rate limits, HA/restore exercises, or load/security testing.
+Production safeguards already present include rejection of development authentication in production, PostgreSQL `verify-full` requirements, verified SMTP policy, strict/bounded JSON, parameterized SQL, SHA-256 local token lookup pinned by an independent known digest and exact store-argument test, bounded timeouts, safe error contracts, loopback local publications, pinned dependencies/images/actions, and secret-pattern checks. These do not replace threat modeling, external identity, managed secrets, private ingress, rate limits, HA/restore exercises, or load/security testing.
 
 ## 9. Accepted debt and non-goals
 
@@ -74,7 +74,11 @@ Resolved during hardening:
 - fixed Compose projects/ports and unchecked teardown made concurrent or failed verification ambiguous;
 - CI duplicated a fixed PostgreSQL service instead of using the single Compose authority;
 - SMTP TLS/AUTH/certificate behavior and several database boundary invariants lacked direct coverage;
-- delivery, listener, verification, and AI-assistance documentation contained claims broader than executable evidence.
+- delivery, listener, verification, and AI-assistance documentation contained claims broader than executable evidence;
+- the verifier deferred trapped signals while foreground children ran; all long Compose/test/demo children are now isolated, signaled as owned process groups, promptly reaped, and covered on the CI `compose-smoke` path;
+- undocumented trailing-slash item, notification, and action aliases could reach the application instead of returning the stable 404 contract;
+- required OpenAPI header keys could point to dangling references without failing the contract gate;
+- authentication hashing coverage compared the production helper to itself instead of pinning SHA-256 and the exact store boundary independently.
 
 Remaining in-scope findings: none identified after the final commands recorded in [`verification.md`](verification.md). The accepted debt above remains deliberate and prevents a production-readiness claim.
 

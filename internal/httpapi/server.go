@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 type Server struct {
@@ -29,7 +30,14 @@ func NewServer(config ServerConfig) (*Server, error) {
 	api.HandleFunc("/v1/notifications", server.handleNotifications)
 	api.HandleFunc("/v1/notifications/", server.handleNotification)
 	api.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) { server.writeError(w, r, notFound()) })
-	root.Handle("/v1/", server.authenticate(api))
+	exactBusinessRoutes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			server.writeError(w, r, notFound())
+			return
+		}
+		api.ServeHTTP(w, r)
+	})
+	root.Handle("/v1/", server.authenticate(exactBusinessRoutes))
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { server.writeError(w, r, notFound()) })
 	server.handler = server.requestIDMiddleware(server.recoveryMiddleware(server.accessLogMiddleware(root)))
 	return server, nil
