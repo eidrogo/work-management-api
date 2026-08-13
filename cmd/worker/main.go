@@ -16,7 +16,6 @@ import (
 	"github.com/eidrogo/work-management-api/internal/config"
 	"github.com/eidrogo/work-management-api/internal/metrics"
 	"github.com/eidrogo/work-management-api/internal/notifications"
-	"github.com/eidrogo/work-management-api/internal/platform/clock"
 	"github.com/eidrogo/work-management-api/internal/platform/database"
 	"github.com/eidrogo/work-management-api/internal/platform/email"
 	"github.com/eidrogo/work-management-api/internal/platform/logging"
@@ -54,7 +53,7 @@ func run() error {
 		return err
 	}
 	metricRegistry := metrics.New(store, time.Now)
-	worker, err := notifications.NewWorker(store, sender, clock.System{}, logger, notifications.WorkerConfig{WorkerID: cfg.WorkerID, BatchSize: cfg.BatchSize, LeaseDuration: cfg.LeaseDuration, MaxAttempts: cfg.MaxAttempts, BackoffBase: cfg.BackoffBase, BackoffMax: cfg.BackoffMax, PollInterval: cfg.PollInterval, Random: rand.Float64, Metrics: metricRegistry})
+	worker, err := notifications.NewWorker(store, sender, logger, notifications.WorkerConfig{WorkerID: cfg.WorkerID, BatchSize: cfg.BatchSize, LeaseDuration: cfg.LeaseDuration, MaxAttempts: cfg.MaxAttempts, BackoffBase: cfg.BackoffBase, BackoffMax: cfg.BackoffMax, PollInterval: cfg.PollInterval, Random: rand.Float64, Metrics: metricRegistry})
 	if err != nil {
 		return err
 	}

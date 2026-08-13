@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -61,33 +62,6 @@ func (service *Service) Create(ctx context.Context, actor auth.Principal, input 
 		return MutationResult{}, fmt.Errorf("begin create transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO idempotency_keys(actor_id,operation,idempotency_key,request_hash,resource_id,created_at)
-VALUES($1,'CREATE_WORK_ITEM',$2,$3,$4,$5)
-ON CONFLICT(actor_id,operation,idempotency_key) DO NOTHING`, actor.ID, input.IdempotencyKey, requestHash(input), itemID, now)
-	if err != nil {
-		return MutationResult{}, fmt.Errorf("reserve idempotency key: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return MutationResult{}, err
-	}
-	if affected == 0 {
-		var existingHash, existingID string
-		if err = tx.QueryRowContext(ctx, `SELECT request_hash,resource_id::text FROM idempotency_keys
-WHERE actor_id=$1 AND operation='CREATE_WORK_ITEM' AND idempotency_key=$2`, actor.ID, input.IdempotencyKey).
-			Scan(&existingHash, &existingID); err != nil {
-			return MutationResult{}, fmt.Errorf("read idempotency key: %w", err)
-		}
-		if existingHash != requestHash(input) {
-			return MutationResult{}, newError(ErrIdempotencyKeyReused, "IDEMPOTENCY_KEY_REUSED", "The idempotency key was already used with a different request.", nil)
-		}
-		item, err := queryWorkItem(ctx, tx, existingID)
-		if err != nil {
-			return MutationResult{}, err
-		}
-		return MutationResult{Item: item, Idempotent: true}, nil
-	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,title,description,status,creator_id,assignee_id,version,created_at,updated_at)
 VALUES($1,$2,$3,'UNASSIGNED',$4,NULL,1,$5,$5)`, itemID, input.Title, input.Description, actor.ID, now); err != nil {
 		return MutationResult{}, fmt.Errorf("insert work item: %w", err)
@@ -99,6 +73,38 @@ VALUES($1,$2,$3,'WORK_ITEM_CREATED',NULL,'UNASSIGNED',$4)`, eventID, itemID, act
 	item, err := queryWorkItem(ctx, tx, itemID)
 	if err != nil {
 		return MutationResult{}, err
+	}
+	snapshot, err := json.Marshal(item)
+	if err != nil {
+		return MutationResult{}, fmt.Errorf("marshal create response snapshot: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO idempotency_keys(actor_id,operation,idempotency_key,request_hash,resource_id,response_snapshot,created_at)
+VALUES($1,'CREATE_WORK_ITEM',$2,$3,$4,$5::jsonb,$6)
+ON CONFLICT(actor_id,operation,idempotency_key) DO NOTHING`, actor.ID, input.IdempotencyKey, requestHash(input), itemID, string(snapshot), now)
+	if err != nil {
+		return MutationResult{}, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if affected == 0 {
+		var existingHash string
+		var existingSnapshot []byte
+		if err = tx.QueryRowContext(ctx, `SELECT request_hash,response_snapshot FROM idempotency_keys
+WHERE actor_id=$1 AND operation='CREATE_WORK_ITEM' AND idempotency_key=$2`, actor.ID, input.IdempotencyKey).
+			Scan(&existingHash, &existingSnapshot); err != nil {
+			return MutationResult{}, fmt.Errorf("read idempotency key: %w", err)
+		}
+		if existingHash != requestHash(input) {
+			return MutationResult{}, newError(ErrIdempotencyKeyReused, "IDEMPOTENCY_KEY_REUSED", "The idempotency key was already used with a different request.", nil)
+		}
+		var original WorkItem
+		if err = json.Unmarshal(existingSnapshot, &original); err != nil {
+			return MutationResult{}, fmt.Errorf("decode create response snapshot: %w", err)
+		}
+		return MutationResult{Item: original, Idempotent: true}, nil
 	}
 	if err = tx.Commit(); err != nil {
 		return MutationResult{}, fmt.Errorf("commit create: %w", err)

@@ -3,10 +3,10 @@ package notifications
 import (
 	"context"
 	"fmt"
-	"time"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/eidrogo/work-management-api/internal/auth"
-	"github.com/eidrogo/work-management-api/internal/platform/clock"
 	"github.com/eidrogo/work-management-api/internal/platform/id"
 	"github.com/eidrogo/work-management-api/internal/workitems"
 )
@@ -24,18 +24,26 @@ type Page struct {
 type Repository interface {
 	List(context.Context, ListInput) (Page, error)
 	Get(context.Context, string) (Delivery, error)
-	Replay(context.Context, string, time.Time) (Delivery, error)
+	Replay(context.Context, ReplayRequest) (Delivery, error)
 }
-type Service struct {
-	repository Repository
-	clock      clock.Clock
+type ReplayInput struct {
+	Reason    string
+	RequestID string
 }
+type ReplayRequest struct {
+	NotificationID string
+	ActorID        string
+	RequestID      string
+	Channel        ReplayChannel
+	Reason         string
+}
+type Service struct{ repository Repository }
 
-func NewService(repository Repository, current clock.Clock) (*Service, error) {
-	if repository == nil || current == nil {
-		return nil, fmt.Errorf("notification repository and clock are required")
+func NewService(repository Repository) (*Service, error) {
+	if repository == nil {
+		return nil, fmt.Errorf("notification repository is required")
 	}
-	return &Service{repository: repository, clock: current}, nil
+	return &Service{repository: repository}, nil
 }
 func (service *Service) List(ctx context.Context, actor auth.Principal, input ListInput) (Page, error) {
 	if err := workitems.AuthorizeManager(actor); err != nil {
@@ -56,14 +64,44 @@ func (service *Service) Get(ctx context.Context, actor auth.Principal, notificat
 	}
 	return service.repository.Get(ctx, notificationID)
 }
-func (service *Service) Replay(ctx context.Context, actor auth.Principal, notificationID string) (Delivery, error) {
+func (service *Service) Replay(ctx context.Context, actor auth.Principal, notificationID string, input ReplayInput) (Delivery, error) {
 	if err := workitems.AuthorizeManager(actor); err != nil {
 		return Delivery{}, err
 	}
-	if !id.IsUUID(notificationID) {
-		return Delivery{}, fmt.Errorf("%w: notification id must be a UUID", ErrInvalidInput)
+	request, err := validateReplayRequest(ReplayRequest{
+		NotificationID: notificationID,
+		ActorID:        actor.ID,
+		RequestID:      input.RequestID,
+		Channel:        ReplayChannelHTTP,
+		Reason:         input.Reason,
+	})
+	if err != nil {
+		return Delivery{}, err
 	}
-	return service.repository.Replay(ctx, notificationID, service.clock.Now())
+	return service.repository.Replay(ctx, request)
+}
+
+func validateReplayRequest(request ReplayRequest) (ReplayRequest, error) {
+	request.NotificationID = strings.TrimSpace(request.NotificationID)
+	request.ActorID = strings.TrimSpace(request.ActorID)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	if !id.IsUUID(request.NotificationID) {
+		return ReplayRequest{}, fmt.Errorf("%w: notification id must be a UUID", ErrInvalidInput)
+	}
+	if request.ActorID == "" || utf8.RuneCountInString(request.ActorID) > 200 {
+		return ReplayRequest{}, fmt.Errorf("%w: actor id must contain between 1 and 200 characters", ErrInvalidInput)
+	}
+	if request.RequestID == "" || utf8.RuneCountInString(request.RequestID) > 128 {
+		return ReplayRequest{}, fmt.Errorf("%w: request id must contain between 1 and 128 characters", ErrInvalidInput)
+	}
+	if request.Channel != ReplayChannelHTTP && request.Channel != ReplayChannelCLI {
+		return ReplayRequest{}, fmt.Errorf("%w: invalid replay channel", ErrInvalidInput)
+	}
+	if request.Reason == "" || utf8.RuneCountInString(request.Reason) > 1000 {
+		return ReplayRequest{}, fmt.Errorf("%w: replay reason must contain between 1 and 1000 characters", ErrInvalidInput)
+	}
+	return request, nil
 }
 func validateListInput(input ListInput) (ListInput, error) {
 	if input.Limit == 0 {

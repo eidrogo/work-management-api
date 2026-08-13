@@ -82,9 +82,11 @@ VALUES($1,$2,$3,$4,$5,'ASSIGNED',$6,$7,$8,$9) RETURNING id`, eventPublicID, item
 		return MutationResult{}, err
 	}
 	messageID := fmt.Sprintf("<%s@work-management.invalid>", notificationID)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO notification_deliveries(
+	if _, err = tx.ExecContext(ctx, `WITH db_time AS MATERIALIZED (SELECT clock_timestamp() AS now)
+INSERT INTO notification_deliveries(
  id,work_item_id,assignment_event_id,recipient_email,recipient_name,event_type,payload,status,attempt_count,delivery_cycle,cycle_attempt_count,next_attempt_at,message_id,created_at,updated_at,deduplication_key)
-VALUES($1,$2,$3,$4,$5,'WORK_ITEM_ASSIGNED_EMAIL',$6::jsonb,'PENDING',0,1,0,$7,$8,$7,$7,$9)`, notificationID, item.ID, eventSequence, assignee.Email, assignee.DisplayName, string(payload), now, messageID, "work-item-assignment:"+eventPublicID); err != nil {
+SELECT $1,$2,$3,$4,$5,'WORK_ITEM_ASSIGNED_EMAIL',$6::jsonb,'PENDING',0,1,0,db_time.now,$7,db_time.now,db_time.now,$8
+FROM db_time`, notificationID, item.ID, eventSequence, assignee.Email, assignee.DisplayName, string(payload), messageID, "work-item-assignment:"+eventPublicID); err != nil {
 		return MutationResult{}, fmt.Errorf("enqueue assignment email: %w", err)
 	}
 	updated, err := queryWorkItem(ctx, tx, itemID)

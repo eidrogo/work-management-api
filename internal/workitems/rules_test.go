@@ -9,23 +9,129 @@ import (
 
 func TestRoleAndLifecycleRules(t *testing.T) {
 	t.Parallel()
-	manager := auth.Principal{ID: "m", Role: auth.RoleManager}
-	worker := auth.Principal{ID: "w", Role: auth.RoleWorker}
-	other := auth.Principal{ID: "o", Role: auth.RoleWorker}
-	if err := AuthorizeCreate(manager); err != nil {
-		t.Fatal(err)
+	manager := auth.Principal{ID: "manager", Role: auth.RoleManager}
+	worker := auth.Principal{ID: "worker", Role: auth.RoleWorker}
+	other := auth.Principal{ID: "other", Role: auth.RoleWorker}
+
+	for _, test := range []struct {
+		name    string
+		action  func() error
+		wantErr error
+	}{
+		{name: "manager creates", action: func() error { return AuthorizeCreate(manager) }},
+		{name: "worker cannot create", action: func() error { return AuthorizeCreate(worker) }, wantErr: ErrPermissionDenied},
+		{name: "manager lists manager queue", action: func() error { return AuthorizeManager(manager) }},
+		{name: "worker cannot list manager queue", action: func() error { return AuthorizeManager(worker) }, wantErr: ErrPermissionDenied},
+		{name: "worker lists own queue", action: func() error { return AuthorizeWorker(worker) }},
+		{name: "manager cannot list own queue", action: func() error { return AuthorizeWorker(manager) }, wantErr: ErrPermissionDenied},
+		{name: "manager reads every item", action: func() error { return AuthorizeRead(manager, WorkItem{Status: StatusUnassigned}) }},
+		{name: "assignee reads assigned item", action: func() error { return AuthorizeRead(worker, WorkItem{Status: StatusAssigned, AssigneeID: worker.ID}) }},
+		{name: "other worker sees not found", action: func() error { return AuthorizeRead(other, WorkItem{Status: StatusAssigned, AssigneeID: worker.ID}) }, wantErr: ErrResourceNotFound},
+		{name: "unassigned hidden from worker", action: func() error { return AuthorizeRead(worker, WorkItem{Status: StatusUnassigned}) }, wantErr: ErrResourceNotFound},
+		{name: "positive version", action: func() error { return ValidateExpectedVersion(1) }},
+		{name: "missing version", action: func() error { return ValidateExpectedVersion(0) }, wantErr: ErrExpectedVersionRequired},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := test.action()
+			if test.wantErr == nil && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("error=%v want=%v", err, test.wantErr)
+			}
+		})
 	}
-	if !errors.Is(AuthorizeCreate(worker), ErrPermissionDenied) {
-		t.Fatal("worker create should be denied")
+}
+
+func TestTransitionLifecycleMatrix(t *testing.T) {
+	t.Parallel()
+	manager := auth.Principal{ID: "manager", Role: auth.RoleManager}
+	assignee := auth.Principal{ID: "worker", Role: auth.RoleWorker}
+	other := auth.Principal{ID: "other", Role: auth.RoleWorker}
+	tests := []struct {
+		name      string
+		actor     auth.Principal
+		status    Status
+		target    Status
+		wantErr   error
+		wantNoop  bool
+		wantEvent EventType
+	}{
+		{name: "assigned to in progress", actor: assignee, status: StatusAssigned, target: StatusInProgress, wantEvent: EventMarkedInProgress},
+		{name: "in progress to completed", actor: assignee, status: StatusInProgress, target: StatusCompleted, wantEvent: EventCompleted},
+		{name: "repeat in progress", actor: assignee, status: StatusInProgress, target: StatusInProgress, wantNoop: true},
+		{name: "repeat completed", actor: assignee, status: StatusCompleted, target: StatusCompleted, wantNoop: true},
+		{name: "unassigned cannot start", actor: assignee, status: StatusUnassigned, target: StatusInProgress, wantErr: ErrResourceNotFound},
+		{name: "assigned cannot complete directly", actor: assignee, status: StatusAssigned, target: StatusCompleted, wantErr: ErrInvalidTransition},
+		{name: "in progress cannot return to assigned", actor: assignee, status: StatusInProgress, target: StatusAssigned, wantErr: ErrInvalidTransition},
+		{name: "completed cannot start", actor: assignee, status: StatusCompleted, target: StatusInProgress, wantErr: ErrCompletedImmutable},
+		{name: "manager cannot start", actor: manager, status: StatusAssigned, target: StatusInProgress, wantErr: ErrPermissionDenied},
+		{name: "other worker cannot start", actor: other, status: StatusAssigned, target: StatusInProgress, wantErr: ErrResourceNotFound},
 	}
-	item := WorkItem{Status: StatusAssigned, AssigneeID: worker.ID}
-	if _, err := ValidateTransition(worker, item, StatusInProgress); err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			item := WorkItem{Status: test.status}
+			if test.status != StatusUnassigned {
+				item.AssigneeID = assignee.ID
+			}
+			decision, err := ValidateTransition(test.actor, item, test.target)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("error=%v want=%v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || decision.Noop != test.wantNoop || decision.EventType != test.wantEvent {
+				t.Fatalf("decision=%#v err=%v", decision, err)
+			}
+		})
 	}
-	if !errors.Is(AuthorizeRead(other, item), ErrResourceNotFound) {
-		t.Fatal("other worker should not read item")
+}
+
+func TestAssignmentLifecycleMatrix(t *testing.T) {
+	t.Parallel()
+	manager := auth.Principal{ID: "manager", Role: auth.RoleManager}
+	workerActor := auth.Principal{ID: "worker-actor", Role: auth.RoleWorker}
+	alice := auth.User{ID: "alice", Role: auth.RoleWorker}
+	bob := auth.User{ID: "bob", Role: auth.RoleWorker}
+	managerUser := auth.User{ID: "manager-user", Role: auth.RoleManager}
+	tests := []struct {
+		name      string
+		actor     auth.Principal
+		item      WorkItem
+		assignee  auth.User
+		reason    string
+		wantErr   error
+		wantNoop  bool
+		wantEvent EventType
+	}{
+		{name: "initial assignment", actor: manager, item: WorkItem{Status: StatusUnassigned}, assignee: alice, wantEvent: EventAssigned},
+		{name: "same assignee noop", actor: manager, item: WorkItem{Status: StatusAssigned, AssigneeID: alice.ID}, assignee: alice, wantNoop: true},
+		{name: "reasoned reassignment", actor: manager, item: WorkItem{Status: StatusAssigned, AssigneeID: alice.ID}, assignee: bob, reason: "coverage", wantEvent: EventReassigned},
+		{name: "reason required", actor: manager, item: WorkItem{Status: StatusAssigned, AssigneeID: alice.ID}, assignee: bob, wantErr: ErrReassignmentReasonRequired},
+		{name: "worker cannot assign", actor: workerActor, item: WorkItem{Status: StatusUnassigned}, assignee: alice, wantErr: ErrPermissionDenied},
+		{name: "manager cannot be assignee", actor: manager, item: WorkItem{Status: StatusUnassigned}, assignee: managerUser, wantErr: ErrAssigneeMustBeWorker},
+		{name: "in progress assignment conflict", actor: manager, item: WorkItem{Status: StatusInProgress, AssigneeID: alice.ID}, assignee: bob, reason: "coverage", wantErr: ErrAssignmentConflict},
+		{name: "completed immutable", actor: manager, item: WorkItem{Status: StatusCompleted, AssigneeID: alice.ID}, assignee: bob, reason: "coverage", wantErr: ErrCompletedImmutable},
 	}
-	if !errors.Is(ValidateExpectedVersion(0), ErrExpectedVersionRequired) {
-		t.Fatal("version should be required")
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			decision, err := ValidateAssignment(test.actor, test.item, test.assignee, test.reason)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("error=%v want=%v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || decision.Noop != test.wantNoop || decision.EventType != test.wantEvent {
+				t.Fatalf("decision=%#v err=%v", decision, err)
+			}
+		})
 	}
 }

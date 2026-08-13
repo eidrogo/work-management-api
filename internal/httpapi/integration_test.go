@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestDocumentedHTTPFlow(t *testing.T) {
 	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.Fixed{Time: now})
 	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
 	store, _ := notifications.NewStore(db)
-	notificationService, _ := notifications.NewService(store, clock.Fixed{Time: now})
+	notificationService, _ := notifications.NewService(store)
 	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +51,100 @@ func TestDocumentedHTTPFlow(t *testing.T) {
 	otherResponse := doJSON(t, server.Client(), http.MethodGet, server.URL+"/v1/work-items/"+created.Data.ID, seed.WorkerBobToken, nil, nil)
 	if otherResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("other worker status=%d", otherResponse.StatusCode)
+	}
+}
+
+func TestCreateIdempotencyHTTPReturnsOriginalETagAndBody(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	_, _ = seed.Apply(context.Background(), db, clock.Fixed{Time: now})
+	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.Fixed{Time: now})
+	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+	store, _ := notifications.NewStore(db)
+	notificationService, _ := notifications.NewService(store)
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	createBody := []byte(`{"title":"Immutable HTTP create","description":"Original"}`)
+	createdResponse := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/work-items", seed.ManagerToken, map[string]string{"Idempotency-Key": "http-immutable-create"}, createBody)
+	if createdResponse.StatusCode != http.StatusCreated || createdResponse.Header.Get("ETag") != `"1"` {
+		t.Fatalf("create status=%d etag=%q", createdResponse.StatusCode, createdResponse.Header.Get("ETag"))
+	}
+	var created struct {
+		Data workitems.WorkItem `json:"data"`
+	}
+	decodeBody(t, createdResponse, &created)
+	assignedResponse := doJSON(t, server.Client(), http.MethodPut, server.URL+"/v1/work-items/"+created.Data.ID+"/assignment", seed.ManagerToken, map[string]string{"If-Match": `"1"`}, []byte(`{"assignee_id":"`+seed.WorkerAliceID+`"}`))
+	if assignedResponse.StatusCode != http.StatusOK {
+		t.Fatalf("assign status=%d", assignedResponse.StatusCode)
+	}
+	_ = assignedResponse.Body.Close()
+	startedResponse := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/work-items/"+created.Data.ID+"/start", seed.WorkerAliceToken, map[string]string{"If-Match": `"2"`}, nil)
+	if startedResponse.StatusCode != http.StatusOK {
+		t.Fatalf("start status=%d", startedResponse.StatusCode)
+	}
+	_ = startedResponse.Body.Close()
+	completedResponse := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/work-items/"+created.Data.ID+"/complete", seed.WorkerAliceToken, map[string]string{"If-Match": `"3"`}, nil)
+	if completedResponse.StatusCode != http.StatusOK {
+		t.Fatalf("complete status=%d", completedResponse.StatusCode)
+	}
+	_ = completedResponse.Body.Close()
+	replayResponse := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/work-items", seed.ManagerToken, map[string]string{"Idempotency-Key": "http-immutable-create"}, createBody)
+	if replayResponse.StatusCode != http.StatusOK || replayResponse.Header.Get("Idempotent-Replayed") != "true" || replayResponse.Header.Get("ETag") != `"1"` {
+		t.Fatalf("replay status=%d idempotent=%q etag=%q", replayResponse.StatusCode, replayResponse.Header.Get("Idempotent-Replayed"), replayResponse.Header.Get("ETag"))
+	}
+	var replayed struct {
+		Data workitems.WorkItem `json:"data"`
+	}
+	decodeBody(t, replayResponse, &replayed)
+	if !reflect.DeepEqual(replayed.Data, created.Data) {
+		t.Fatalf("created=%#v replayed=%#v", created.Data, replayed.Data)
+	}
+}
+
+func TestReplayHTTPPersistsExactRequestIDAndAuthenticatedActor(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	_, _ = seed.Apply(context.Background(), db, clock.Fixed{Time: now})
+	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.Fixed{Time: now})
+	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+	store, _ := notifications.NewStore(db)
+	notificationService, _ := notifications.NewService(store)
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, Readiness: func(ctx context.Context) error { return database.Ready(ctx, db) }, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	created, err := itemService.Create(context.Background(), auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager, DisplayName: "Maya"}, workitems.CreateInput{Title: "Replay HTTP", IdempotencyKey: "replay-http-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = itemService.Assign(context.Background(), auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager, DisplayName: "Maya"}, created.Item.ID, workitems.AssignmentInput{AssigneeID: seed.WorkerAliceID, ExpectedVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	delivery, found, err := store.ClaimNext(context.Background(), notifications.ClaimRequest{WorkerID: "worker-http", LeaseDuration: time.Minute, MaxAttempts: 3})
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if err = store.Complete(context.Background(), notifications.Completion{DeliveryID: delivery.ID, WorkerID: "worker-http", LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount, Outcome: notifications.OutcomeFailed, FailureCode: notifications.FailureSMTPRecipientRejected}); err != nil {
+		t.Fatal(err)
+	}
+	requestID := "request-http-persisted"
+	response := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/notifications/"+delivery.ID+"/replay", seed.ManagerToken, map[string]string{"X-Request-ID": requestID}, []byte(`{"reason":"  operator verified recipient  "}`))
+	if response.StatusCode != http.StatusAccepted || response.Header.Get("X-Request-ID") != requestID {
+		t.Fatalf("status=%d request_id=%q", response.StatusCode, response.Header.Get("X-Request-ID"))
+	}
+	_ = response.Body.Close()
+	var actorID, storedRequestID, channel, reason string
+	if err = db.QueryRowContext(context.Background(), `SELECT actor_id,request_id,channel,reason FROM notification_replay_events WHERE notification_id=$1`, delivery.ID).Scan(&actorID, &storedRequestID, &channel, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if actorID != seed.ManagerID || storedRequestID != requestID || channel != string(notifications.ReplayChannelHTTP) || reason != "operator verified recipient" {
+		t.Fatalf("actor=%q request=%q channel=%q reason=%q", actorID, storedRequestID, channel, reason)
 	}
 }
 

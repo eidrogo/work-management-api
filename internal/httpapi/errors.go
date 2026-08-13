@@ -79,6 +79,8 @@ func mapError(err error) (int, errorBody) {
 	case errors.Is(err, workitems.ErrAssigneeMustBeWorker), errors.Is(err, workitems.ErrReassignmentReasonRequired):
 		code, message, details := workitems.ErrorContract(err)
 		return http.StatusUnprocessableEntity, errorBody{Code: code, Message: message, Details: details}
+	case errors.Is(err, notifications.ErrReplayLimitReached):
+		return http.StatusConflict, errorBody{Code: "NOTIFICATION_REPLAY_LIMIT_REACHED", Message: "The notification cannot be replayed after 10 delivery cycles."}
 	case errors.Is(err, workitems.ErrInvalidTransition), errors.Is(err, workitems.ErrAssignmentConflict), errors.Is(err, workitems.ErrConcurrentModification), errors.Is(err, workitems.ErrCompletedImmutable), errors.Is(err, workitems.ErrIdempotencyKeyReused), errors.Is(err, notifications.ErrNotReplayable), errors.Is(err, notifications.ErrLeaseLost):
 		code, message, details := workitems.ErrorContract(err)
 		if code == "INTERNAL_ERROR" {

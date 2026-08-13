@@ -67,14 +67,14 @@ func NewSMTP(config Config) (*SMTP, error) {
 }
 func (sender *SMTP) Send(ctx context.Context, message notifications.Message) error {
 	if sender == nil {
-		return notifications.Permanent(errors.New("SMTP sender is not initialized"))
+		return notifications.Permanent(notifications.FailureSMTPConfiguration, errors.New("SMTP sender is not initialized"))
 	}
 	if err := validateMessage(message); err != nil {
-		return notifications.Permanent(err)
+		return notifications.Permanent(notifications.FailureSMTPConfiguration, err)
 	}
 	to, err := mail.ParseAddress(message.To)
 	if err != nil {
-		return notifications.Permanent(fmt.Errorf("parse recipient: %w", err))
+		return notifications.Permanent(notifications.FailureSMTPConfiguration, fmt.Errorf("parse recipient: %w", err))
 	}
 	if message.ToName != "" {
 		to.Name = message.ToName
@@ -84,7 +84,7 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 	address := net.JoinHostPort(sender.config.Host, strconv.Itoa(sender.config.Port))
 	raw, err := (&net.Dialer{Timeout: sender.config.Timeout}).DialContext(ctx, "tcp", address)
 	if err != nil {
-		return classify(fmt.Errorf("dial SMTP server: %w", err))
+		return classify(smtpStageConnection, fmt.Errorf("dial SMTP server: %w", err))
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = raw.SetDeadline(deadline)
@@ -94,51 +94,51 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 		tlsConnection := tls.Client(raw, sender.tlsConfig())
 		if err = tlsConnection.HandshakeContext(ctx); err != nil {
 			_ = raw.Close()
-			return classify(err)
+			return classify(smtpStageTLS, err)
 		}
 		connection = tlsConnection
 	}
 	client, err := smtp.NewClient(connection, sender.config.Host)
 	if err != nil {
 		_ = connection.Close()
-		return classify(err)
+		return classify(smtpStageProtocol, err)
 	}
 	defer func() { _ = client.Close() }()
 	if sender.config.TLSMode == TLSSTARTTLS {
 		supported, _ := client.Extension("STARTTLS")
 		if !supported {
-			return notifications.Permanent(errors.New("SMTP server does not advertise STARTTLS"))
+			return notifications.Permanent(notifications.FailureSMTPConfiguration, errors.New("SMTP server does not advertise STARTTLS"))
 		}
 		if err = client.StartTLS(sender.tlsConfig()); err != nil {
-			return classify(err)
+			return classify(smtpStageTLS, err)
 		}
 	}
 	if sender.config.Username != "" {
 		if err = client.Auth(smtp.PlainAuth("", sender.config.Username, sender.config.Password, sender.config.Host)); err != nil {
-			return classify(err)
+			return classify(smtpStageAuthentication, err)
 		}
 	}
 	if err = client.Mail(sender.from.Address); err != nil {
-		return classify(err)
+		return classify(smtpStageMessage, err)
 	}
 	if err = client.Rcpt(to.Address); err != nil {
-		return classify(err)
+		return classify(smtpStageRecipient, err)
 	}
 	writer, err := client.Data()
 	if err != nil {
-		return classify(err)
+		return classify(smtpStageMessage, err)
 	}
 	payload, err := buildMessage(sender.from, to, message)
 	if err != nil {
 		_ = writer.Close()
-		return notifications.Permanent(err)
+		return notifications.Permanent(notifications.FailureSMTPConfiguration, err)
 	}
 	if _, err = io.Copy(writer, strings.NewReader(payload)); err != nil {
 		_ = writer.Close()
-		return classify(err)
+		return classify(smtpStageConnection, err)
 	}
 	if err = writer.Close(); err != nil {
-		return classify(err)
+		return classify(smtpStageMessage, err)
 	}
 	_ = client.Quit()
 	return nil
@@ -180,20 +180,52 @@ func normalizeCRLF(value string) string {
 	value = strings.ReplaceAll(value, "\r", "\n")
 	return strings.ReplaceAll(value, "\n", "\r\n")
 }
-func classify(err error) error {
+
+type smtpStage string
+
+const (
+	smtpStageConnection     smtpStage = "connection"
+	smtpStageTLS            smtpStage = "tls"
+	smtpStageAuthentication smtpStage = "authentication"
+	smtpStageRecipient      smtpStage = "recipient"
+	smtpStageMessage        smtpStage = "message"
+	smtpStageProtocol       smtpStage = "protocol"
+)
+
+func classify(stage smtpStage, err error) error {
 	if err == nil {
 		return nil
 	}
+	var networkError net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) {
+		return notifications.Retryable(notifications.FailureSMTPTimeout, err)
+	}
 	var protocolError *textproto.Error
 	if errors.As(err, &protocolError) {
-		if protocolError.Code >= 500 {
-			return notifications.Permanent(err)
+		if protocolError.Code >= 400 && protocolError.Code < 500 {
+			return notifications.Retryable(notifications.FailureSMTPTemporary, err)
 		}
-		return notifications.Retryable(err)
+		if protocolError.Code >= 500 {
+			switch stage {
+			case smtpStageAuthentication:
+				return notifications.Permanent(notifications.FailureSMTPAuthentication, err)
+			case smtpStageRecipient:
+				return notifications.Permanent(notifications.FailureSMTPRecipientRejected, err)
+			case smtpStageMessage:
+				return notifications.Permanent(notifications.FailureSMTPMessageRejected, err)
+			case smtpStageTLS:
+				return notifications.Permanent(notifications.FailureSMTPTLS, err)
+			default:
+				return notifications.Retryable(notifications.FailureSMTPProtocol, err)
+			}
+		}
+		return notifications.Retryable(notifications.FailureSMTPProtocol, err)
 	}
-	var networkError net.Error
-	if errors.As(err, &networkError) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return notifications.Retryable(err)
+	if stage == smtpStageTLS {
+		return notifications.Retryable(notifications.FailureSMTPTLS, err)
 	}
-	return notifications.Retryable(err)
+	if errors.As(err, &networkError) || errors.Is(err, context.Canceled) || stage == smtpStageConnection {
+		return notifications.Retryable(notifications.FailureSMTPConnection, err)
+	}
+	return notifications.Retryable(notifications.FailureSMTPProtocol, err)
 }

@@ -61,6 +61,11 @@
                   "$ref": "#/components/schemas/WorkItemListResponse"
                 }
               }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              }
             }
           },
           "401": {
@@ -107,6 +112,9 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             },
             "content": {
@@ -127,10 +135,10 @@
                 }
               },
               "Idempotent-Replayed": {
-                "schema": {
-                  "type": "string",
-                  "const": "true"
-                }
+                "$ref": "#/components/headers/IdempotentReplayed"
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             },
             "content": {
@@ -184,6 +192,9 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             },
             "content": {
@@ -247,6 +258,12 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              },
+              "Idempotent-Replayed": {
+                "$ref": "#/components/headers/IdempotentReplayed"
               }
             },
             "content": {
@@ -309,6 +326,9 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             },
             "content": {
@@ -365,6 +385,9 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             },
             "content": {
@@ -423,6 +446,11 @@
                   "$ref": "#/components/schemas/WorkItemHistoryResponse"
                 }
               }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              }
             }
           },
           "401": {
@@ -471,6 +499,11 @@
                   "$ref": "#/components/schemas/WorkItemListResponse"
                 }
               }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              }
             }
           },
           "401": {
@@ -518,6 +551,11 @@
                   "$ref": "#/components/schemas/NotificationListResponse"
                 }
               }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              }
             }
           },
           "401": {
@@ -555,6 +593,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/NotificationResponse"
                 }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             }
           },
@@ -597,6 +640,11 @@
                   "$ref": "#/components/schemas/NotificationResponse"
                 }
               }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
+              }
             }
           },
           "401": {
@@ -616,6 +664,19 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayNotificationRequest"
+              }
+            }
           }
         }
       }
@@ -636,6 +697,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/Health"
                 }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             }
           }
@@ -658,6 +724,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/Health"
                 }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             }
           },
@@ -683,6 +754,11 @@
                 "schema": {
                   "type": "string"
                 }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/XRequestID"
               }
             }
           }
@@ -800,6 +876,11 @@
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
+          }
         }
       },
       "PermissionDenied": {
@@ -809,6 +890,11 @@
             "schema": {
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
+          }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
           }
         }
       },
@@ -820,6 +906,11 @@
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
+          }
         }
       },
       "NotFound": {
@@ -829,6 +920,11 @@
             "schema": {
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
+          }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
           }
         }
       },
@@ -840,6 +936,11 @@
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
+          }
         }
       },
       "UnprocessableEntity": {
@@ -849,6 +950,11 @@
             "schema": {
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
+          }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
           }
         }
       },
@@ -860,6 +966,11 @@
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
+          }
         }
       },
       "DependencyUnavailable": {
@@ -870,6 +981,11 @@
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
+          }
         }
       },
       "InternalError": {
@@ -879,6 +995,11 @@
             "schema": {
               "$ref": "#/components/schemas/ErrorEnvelope"
             }
+          }
+        },
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/XRequestID"
           }
         }
       }
@@ -1080,7 +1201,8 @@
           },
           "delivery_cycle": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 10
           },
           "cycle_attempt_count": {
             "type": "integer",
@@ -1090,8 +1212,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "last_error_code": {
+            "$ref": "#/components/schemas/NotificationFailureCode"
+          },
           "last_error": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "description": "Fixed generic safe message derived from last_error_code; never provider text."
           },
           "message_id": {
             "type": "string"
@@ -1131,6 +1258,13 @@
               "$ref": "#/components/schemas/NotificationAttempt"
             },
             "description": "Present on the single-notification view; omitted from list pages."
+          },
+          "replays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationReplayEvent"
+            },
+            "description": "Present on the single-notification view; immutable replay events ordered by sequence."
           }
         }
       },
@@ -1341,8 +1475,13 @@
               "ABANDONED"
             ]
           },
+          "error_code": {
+            "$ref": "#/components/schemas/NotificationFailureCode"
+          },
           "error_message": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500,
+            "description": "Fixed generic safe message derived from error_code; never provider text."
           },
           "started_at": {
             "type": "string",
@@ -1352,6 +1491,109 @@
             "type": "string",
             "format": "date-time"
           }
+        }
+      },
+      "NotificationFailureCode": {
+        "type": "string",
+        "enum": [
+          "NOTIFICATION_PAYLOAD_INVALID",
+          "SMTP_CONFIGURATION_ERROR",
+          "SMTP_CONNECTION_FAILED",
+          "SMTP_TIMEOUT",
+          "SMTP_TLS_FAILED",
+          "SMTP_AUTHENTICATION_FAILED",
+          "SMTP_RECIPIENT_REJECTED",
+          "SMTP_MESSAGE_REJECTED",
+          "SMTP_TEMPORARY_FAILURE",
+          "SMTP_PROTOCOL_ERROR",
+          "DELIVERY_FAILED",
+          "LEASE_EXPIRED",
+          "RETRY_LIMIT_EXHAUSTED"
+        ],
+        "description": "Allowlisted delivery failure classification. Provider response text and credentials are never exposed."
+      },
+      "ReplayNotificationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Operator reason for starting a new delivery cycle; surrounding whitespace is trimmed."
+          }
+        }
+      },
+      "NotificationReplayEvent": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "delivery_cycle",
+          "actor_id",
+          "request_id",
+          "channel",
+          "reason",
+          "occurred_at"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "delivery_cycle": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 10
+          },
+          "actor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "HTTP",
+              "CLI"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "description": "Immutable attribution record for one manual replay cycle."
+      }
+    },
+    "headers": {
+      "XRequestID": {
+        "description": "Request correlation identifier returned for every response.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "IdempotentReplayed": {
+        "description": "Present with value true when the response replays an earlier committed mutation.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "true"
+          ]
         }
       }
     }

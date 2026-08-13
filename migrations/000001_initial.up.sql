@@ -34,6 +34,7 @@ CREATE TABLE work_items (
 CREATE INDEX work_items_manager_status_page_idx ON work_items (status, created_at DESC, id DESC);
 CREATE INDEX work_items_manager_page_idx ON work_items (created_at DESC, id DESC);
 CREATE INDEX work_items_worker_queue_idx ON work_items (assignee_id, status, created_at DESC, id DESC);
+CREATE INDEX work_items_assignee_page_idx ON work_items (assignee_id, created_at DESC, id DESC);
 
 CREATE TABLE idempotency_keys (
     actor_id UUID NOT NULL REFERENCES users(id),
@@ -41,6 +42,7 @@ CREATE TABLE idempotency_keys (
     idempotency_key VARCHAR(200) NOT NULL,
     request_hash CHAR(64) NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
     resource_id UUID NOT NULL,
+    response_snapshot JSONB NOT NULL CHECK (jsonb_typeof(response_snapshot) = 'object'),
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (actor_id, operation, idempotency_key)
 );
@@ -74,13 +76,22 @@ CREATE TABLE notification_deliveries (
     payload JSONB NOT NULL,
     status VARCHAR(20) NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'SENT', 'FAILED')),
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    delivery_cycle INTEGER NOT NULL DEFAULT 1 CHECK (delivery_cycle > 0),
+    delivery_cycle INTEGER NOT NULL DEFAULT 1 CHECK (delivery_cycle BETWEEN 1 AND 10),
     cycle_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (cycle_attempt_count >= 0),
     next_attempt_at TIMESTAMPTZ NULL,
-    last_error TEXT NULL,
+    last_error_code VARCHAR(64) NULL CHECK (last_error_code IN (
+        'NOTIFICATION_PAYLOAD_INVALID','SMTP_CONFIGURATION_ERROR',
+        'SMTP_CONNECTION_FAILED','SMTP_TIMEOUT','SMTP_TLS_FAILED',
+        'SMTP_AUTHENTICATION_FAILED','SMTP_RECIPIENT_REJECTED',
+        'SMTP_MESSAGE_REJECTED','SMTP_TEMPORARY_FAILURE',
+        'SMTP_PROTOCOL_ERROR','DELIVERY_FAILED','LEASE_EXPIRED',
+        'RETRY_LIMIT_EXHAUSTED'
+    )),
+    last_error VARCHAR(500) NULL,
     message_id VARCHAR(255) NOT NULL,
     provider_message_id VARCHAR(255) NULL,
     locked_by VARCHAR(255) NULL,
+    lease_token UUID NULL,
     locked_until TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -88,12 +99,16 @@ CREATE TABLE notification_deliveries (
     sent_at TIMESTAMPTZ NULL,
     deduplication_key VARCHAR(255) NOT NULL UNIQUE,
     CONSTRAINT notification_delivery_lease_ck CHECK (
-        (status = 'PROCESSING' AND locked_by IS NOT NULL AND locked_until IS NOT NULL)
-        OR (status <> 'PROCESSING' AND locked_by IS NULL AND locked_until IS NULL)
+        (status = 'PROCESSING' AND locked_by IS NOT NULL AND lease_token IS NOT NULL AND locked_until IS NOT NULL)
+        OR (status <> 'PROCESSING' AND locked_by IS NULL AND lease_token IS NULL AND locked_until IS NULL)
     ),
     CONSTRAINT notification_delivery_schedule_ck CHECK (
-        (status IN ('PENDING', 'PROCESSING') AND next_attempt_at IS NOT NULL)
-        OR (status IN ('SENT', 'FAILED') AND next_attempt_at IS NULL)
+        (status = 'PENDING' AND next_attempt_at IS NOT NULL)
+        OR (status <> 'PENDING' AND next_attempt_at IS NULL)
+    ),
+    CONSTRAINT notification_delivery_error_ck CHECK (
+        (last_error_code IS NULL AND last_error IS NULL)
+        OR (last_error_code IS NOT NULL AND last_error IS NOT NULL)
     ),
     CONSTRAINT notification_delivery_sent_ck CHECK (
         (status = 'SENT' AND sent_at IS NOT NULL)
@@ -104,6 +119,8 @@ CREATE INDEX notification_deliveries_claim_idx ON notification_deliveries (next_
 CREATE INDEX notification_deliveries_expired_lease_idx ON notification_deliveries (locked_until, created_at, id) WHERE status = 'PROCESSING';
 CREATE INDEX notification_deliveries_status_page_idx ON notification_deliveries (status, created_at DESC, id DESC);
 CREATE INDEX notification_deliveries_work_item_idx ON notification_deliveries (work_item_id, created_at DESC, id DESC);
+CREATE UNIQUE INDEX notification_deliveries_lease_token_uq ON notification_deliveries (lease_token) WHERE lease_token IS NOT NULL;
+CREATE INDEX notification_deliveries_page_idx ON notification_deliveries (created_at DESC, id DESC);
 
 CREATE TABLE notification_attempts (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -111,12 +128,37 @@ CREATE TABLE notification_attempts (
     attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
     worker_id VARCHAR(255) NOT NULL,
     outcome VARCHAR(30) NOT NULL CHECK (outcome IN ('SENT', 'RETRY_SCHEDULED', 'FAILED', 'ABANDONED')),
-    error_message TEXT NULL,
+    error_code VARCHAR(64) NULL CHECK (error_code IN (
+        'NOTIFICATION_PAYLOAD_INVALID','SMTP_CONFIGURATION_ERROR',
+        'SMTP_CONNECTION_FAILED','SMTP_TIMEOUT','SMTP_TLS_FAILED',
+        'SMTP_AUTHENTICATION_FAILED','SMTP_RECIPIENT_REJECTED',
+        'SMTP_MESSAGE_REJECTED','SMTP_TEMPORARY_FAILURE',
+        'SMTP_PROTOCOL_ERROR','DELIVERY_FAILED','LEASE_EXPIRED',
+        'RETRY_LIMIT_EXHAUSTED'
+    )),
+    error_message VARCHAR(500) NULL,
     started_at TIMESTAMPTZ NOT NULL,
     finished_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT notification_attempt_error_ck CHECK (
+        (outcome = 'SENT' AND error_code IS NULL AND error_message IS NULL)
+        OR (outcome <> 'SENT' AND error_code IS NOT NULL AND error_message IS NOT NULL)
+    ),
     UNIQUE (notification_id, attempt_number)
 );
 CREATE INDEX notification_attempts_notification_idx ON notification_attempts (notification_id, attempt_number);
+
+CREATE TABLE notification_replay_events (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    notification_id UUID NOT NULL REFERENCES notification_deliveries(id) ON DELETE RESTRICT,
+    delivery_cycle INTEGER NOT NULL CHECK (delivery_cycle BETWEEN 2 AND 10),
+    actor_id VARCHAR(200) NOT NULL CHECK (btrim(actor_id) <> '' AND char_length(actor_id) <= 200),
+    request_id VARCHAR(128) NOT NULL CHECK (btrim(request_id) <> '' AND char_length(request_id) <= 128),
+    channel VARCHAR(10) NOT NULL CHECK (channel IN ('HTTP','CLI')),
+    reason TEXT NOT NULL CHECK (btrim(reason) <> '' AND char_length(reason) <= 1000),
+    occurred_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (notification_id, delivery_cycle)
+);
+CREATE INDEX notification_replay_events_notification_idx ON notification_replay_events (notification_id, id);
 
 CREATE OR REPLACE FUNCTION enforce_work_item_assignee_role()
 RETURNS trigger AS $$
@@ -162,3 +204,4 @@ END;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER work_item_events_append_only BEFORE UPDATE OR DELETE ON work_item_events FOR EACH ROW EXECUTE FUNCTION reject_append_only_mutation();
 CREATE TRIGGER notification_attempts_append_only BEFORE UPDATE OR DELETE ON notification_attempts FOR EACH ROW EXECUTE FUNCTION reject_append_only_mutation();
+CREATE TRIGGER notification_replay_events_append_only BEFORE UPDATE OR DELETE ON notification_replay_events FOR EACH ROW EXECUTE FUNCTION reject_append_only_mutation();

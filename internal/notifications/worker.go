@@ -8,12 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eidrogo/work-management-api/internal/platform/clock"
 	"github.com/eidrogo/work-management-api/internal/workitems"
 )
 
 type Queue interface {
-	ClaimBatch(context.Context, ClaimRequest) ([]Delivery, error)
+	ClaimNext(context.Context, ClaimRequest) (Delivery, bool, error)
 	Complete(context.Context, Completion) error
 }
 type AttemptMetricRecorder interface{ RecordNotificationAttempt(string) }
@@ -31,16 +30,15 @@ type WorkerConfig struct {
 type Worker struct {
 	queue  Queue
 	sender Sender
-	clock  clock.Clock
 	logger *slog.Logger
 	config WorkerConfig
 }
 
-func NewWorker(queue Queue, sender Sender, current clock.Clock, logger *slog.Logger, config WorkerConfig) (*Worker, error) {
-	if queue == nil || sender == nil || current == nil || logger == nil || strings.TrimSpace(config.WorkerID) == "" || config.BatchSize < 1 || config.BatchSize > 100 || config.LeaseDuration <= 0 || config.MaxAttempts < 1 || config.BackoffBase <= 0 || config.BackoffMax < config.BackoffBase || config.PollInterval <= 0 || config.Random == nil {
+func NewWorker(queue Queue, sender Sender, logger *slog.Logger, config WorkerConfig) (*Worker, error) {
+	if queue == nil || sender == nil || logger == nil || strings.TrimSpace(config.WorkerID) == "" || config.BatchSize < 1 || config.BatchSize > 100 || config.LeaseDuration <= 0 || config.MaxAttempts < 1 || config.BackoffBase <= 0 || config.BackoffMax < config.BackoffBase || config.PollInterval <= 0 || config.Random == nil {
 		return nil, fmt.Errorf("invalid notification worker configuration")
 	}
-	return &Worker{queue: queue, sender: sender, clock: current, logger: logger, config: config}, nil
+	return &Worker{queue: queue, sender: sender, logger: logger, config: config}, nil
 }
 func (worker *Worker) Run(ctx context.Context) error {
 	timer := time.NewTimer(0)
@@ -63,13 +61,15 @@ func (worker *Worker) Run(ctx context.Context) error {
 	}
 }
 func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
-	now := worker.clock.Now()
-	deliveries, err := worker.queue.ClaimBatch(ctx, ClaimRequest{Now: now, WorkerID: worker.config.WorkerID, BatchSize: worker.config.BatchSize, LeaseDuration: worker.config.LeaseDuration, MaxAttempts: worker.config.MaxAttempts})
-	if err != nil {
-		return 0, err
-	}
 	processed := 0
-	for _, delivery := range deliveries {
+	for processed < worker.config.BatchSize {
+		delivery, found, err := worker.queue.ClaimNext(ctx, ClaimRequest{WorkerID: worker.config.WorkerID, LeaseDuration: worker.config.LeaseDuration, MaxAttempts: worker.config.MaxAttempts})
+		if err != nil {
+			return processed, err
+		}
+		if !found {
+			break
+		}
 		message, renderErr := renderAssignmentMessage(delivery)
 		sendErr := renderErr
 		if sendErr == nil {
@@ -78,18 +78,17 @@ func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
 		if ctx.Err() != nil {
 			return processed, ctx.Err()
 		}
-		completion := Completion{Delivery: delivery, WorkerID: worker.config.WorkerID, FinishedAt: worker.clock.Now()}
+		completion := Completion{DeliveryID: delivery.ID, WorkerID: worker.config.WorkerID, LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount}
 		switch {
 		case sendErr == nil:
 			completion.Outcome = OutcomeSent
 		case !IsRetryable(sendErr) || delivery.CycleAttemptCount >= worker.config.MaxAttempts:
 			completion.Outcome = OutcomeFailed
-			completion.ErrorMessage = boundedError(sendErr)
+			completion.FailureCode = FailureCodeOf(sendErr)
 		default:
 			completion.Outcome = OutcomeRetryScheduled
-			completion.ErrorMessage = boundedError(sendErr)
-			next := completion.FinishedAt.Add(RetryDelay(worker.config.BackoffBase, worker.config.BackoffMax, delivery.CycleAttemptCount, worker.config.Random()))
-			completion.NextAttemptAt = &next
+			completion.FailureCode = FailureCodeOf(sendErr)
+			completion.RetryAfter = RetryDelay(worker.config.BackoffBase, worker.config.BackoffMax, delivery.CycleAttemptCount, worker.config.Random())
 		}
 		if err = worker.queue.Complete(ctx, completion); err != nil {
 			return processed, err
@@ -105,10 +104,10 @@ func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
 func renderAssignmentMessage(delivery Delivery) (Message, error) {
 	var payload workitems.AssignmentEmailPayload
 	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
-		return Message{}, Permanent(fmt.Errorf("decode assignment payload: %w", err))
+		return Message{}, Permanent(FailureNotificationPayloadInvalid, fmt.Errorf("decode assignment payload: %w", err))
 	}
 	if payload.WorkItemID == "" || strings.TrimSpace(payload.WorkItemTitle) == "" {
-		return Message{}, Permanent(fmt.Errorf("assignment payload is incomplete"))
+		return Message{}, Permanent(FailureNotificationPayloadInvalid, fmt.Errorf("assignment payload is incomplete"))
 	}
 	assignee := strings.TrimSpace(payload.AssigneeName)
 	if assignee == "" {
@@ -125,14 +124,4 @@ func renderAssignmentMessage(delivery Delivery) (Message, error) {
 	}
 	body.WriteString("\nOpen your work queue to review and start the item.\n")
 	return Message{To: delivery.RecipientEmail, ToName: delivery.RecipientName, Subject: "New work assigned: " + payload.WorkItemTitle, TextBody: body.String(), MessageID: delivery.MessageID}, nil
-}
-func boundedError(err error) string {
-	if err == nil {
-		return ""
-	}
-	message := err.Error()
-	if len(message) > 2000 {
-		return message[:2000]
-	}
-	return message
 }

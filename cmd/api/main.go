@@ -55,7 +55,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	notificationService, err := notifications.NewService(store, clock.System{})
+	notificationService, err := notifications.NewService(store)
 	if err != nil {
 		return err
 	}

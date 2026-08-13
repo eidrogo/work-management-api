@@ -6,28 +6,34 @@ import (
 )
 
 type SendError struct {
-	err       error
+	cause     error
+	code      FailureCode
 	retryable bool
 }
 
 func (e *SendError) Error() string {
-	if e == nil || e.err == nil {
-		return "email delivery failed"
+	if e == nil {
+		return SafeFailureMessage(FailureDelivery)
 	}
-	return e.err.Error()
+	return SafeFailureMessage(e.code)
 }
-func (e *SendError) Unwrap() error { return e.err }
-func Retryable(err error) error {
-	if err == nil {
+func (e *SendError) Unwrap() error {
+	if e == nil {
 		return nil
 	}
-	return &SendError{err: err, retryable: true}
+	return e.cause
 }
-func Permanent(err error) error {
-	if err == nil {
+func Retryable(code FailureCode, cause error) error {
+	if cause == nil {
 		return nil
 	}
-	return &SendError{err: err, retryable: false}
+	return &SendError{cause: cause, code: normalizedFailureCode(code), retryable: true}
+}
+func Permanent(code FailureCode, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &SendError{cause: cause, code: normalizedFailureCode(code), retryable: false}
 }
 func IsRetryable(err error) bool {
 	if err == nil {
@@ -38,6 +44,69 @@ func IsRetryable(err error) bool {
 		return deliveryError.retryable
 	}
 	return true
+}
+func FailureCodeOf(err error) FailureCode {
+	var sendError *SendError
+	if errors.As(err, &sendError) && sendError != nil {
+		return normalizedFailureCode(sendError.code)
+	}
+	return FailureDelivery
+}
+func normalizedFailureCode(code FailureCode) FailureCode {
+	if code.Valid() {
+		return code
+	}
+	return FailureDelivery
+}
+func (code FailureCode) Valid() bool {
+	switch code {
+	case FailureNotificationPayloadInvalid,
+		FailureSMTPConfiguration,
+		FailureSMTPConnection,
+		FailureSMTPTimeout,
+		FailureSMTPTLS,
+		FailureSMTPAuthentication,
+		FailureSMTPRecipientRejected,
+		FailureSMTPMessageRejected,
+		FailureSMTPTemporary,
+		FailureSMTPProtocol,
+		FailureDelivery,
+		FailureLeaseExpired,
+		FailureRetryLimit:
+		return true
+	default:
+		return false
+	}
+}
+func SafeFailureMessage(code FailureCode) string {
+	switch normalizedFailureCode(code) {
+	case FailureNotificationPayloadInvalid:
+		return "The notification payload is invalid."
+	case FailureSMTPConfiguration:
+		return "The email service is not configured correctly."
+	case FailureSMTPConnection:
+		return "The email service could not be reached."
+	case FailureSMTPTimeout:
+		return "The email service timed out."
+	case FailureSMTPTLS:
+		return "A secure connection to the email service could not be established."
+	case FailureSMTPAuthentication:
+		return "The email service rejected authentication."
+	case FailureSMTPRecipientRejected:
+		return "The email service rejected the recipient."
+	case FailureSMTPMessageRejected:
+		return "The email service rejected the message."
+	case FailureSMTPTemporary:
+		return "The email service temporarily could not accept the message."
+	case FailureSMTPProtocol:
+		return "The email service returned an unexpected response."
+	case FailureLeaseExpired:
+		return "The delivery lease expired before completion."
+	case FailureRetryLimit:
+		return "The notification retry limit was exhausted."
+	default:
+		return "The notification could not be delivered."
+	}
 }
 func RetryDelay(base, maximum time.Duration, attempt int, random float64) time.Duration {
 	if base <= 0 || maximum <= 0 {

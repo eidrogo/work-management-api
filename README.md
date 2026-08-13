@@ -28,12 +28,12 @@ The repository contains one Go module with independently runnable API and notifi
 - Worker-only `ASSIGNED → IN_PROGRESS → COMPLETED`
 - Immutable completed work
 - Optimistic work-item versions exposed as ETags
-- Create idempotency and deterministic command replay
+- Immutable create-response idempotency and deterministic command replay
 - Append-only work-item event history
 - PostgreSQL transactional notification outbox
 - Expiring worker leases and `FOR UPDATE SKIP LOCKED`
 - Bounded retry cycles with equal jitter
-- Append-only notification-attempt history
+- Append-only notification-attempt and attributed replay history
 - Real SMTP transport: plain, STARTTLS, and implicit TLS
 - Manager notification inspection and failed-delivery replay
 - Keyset pagination
@@ -83,7 +83,7 @@ The full ambiguity record is in [`docs/assessment/ambiguities.md`](docs/assessme
 - Reassign an `ASSIGNED` item to a different worker with a reason.
 - View item history.
 - List and inspect notification delivery state and attempt history.
-- Replay a terminally failed notification in a new retry cycle.
+- Replay a terminally failed notification in a reasoned, attributed new retry cycle (up to cycle 10).
 
 ### Worker capabilities
 
@@ -222,7 +222,7 @@ Current title, description, lifecycle status, immutable creator, nullable assign
 
 ### `idempotency_keys`
 
-Actor, operation, client key, request hash, resource ID, creation time. A key reused with a different payload fails deterministically.
+Actor, operation, client key, request hash, resource ID, immutable first-response JSON snapshot, and creation time. A matching replay returns that originally committed representation even after later item or user mutation; a key reused with a different payload fails deterministically.
 
 ### `work_item_events`
 
@@ -230,11 +230,15 @@ Append-only create, assignment, reassignment, start, and completion events with 
 
 ### `notification_deliveries`
 
-Current outbox/delivery state, assignment event, recipient, payload, attempt counters, retry cycle, next attempt, last error, stable message ID, provider ID if available, lease owner/expiry, sent time, and unique deduplication key.
+Current outbox/delivery state, assignment event, recipient, payload, attempt counters, delivery cycle, next attempt, allowlisted last-error code and fixed generic message, stable message ID, provider ID if available, lease owner/internal UUID fence/expiry, sent time, and unique deduplication key. The fence is worker-internal and is never serialized by the API.
 
 ### `notification_attempts`
 
-Append-only per-attempt outcome (`SENT`, `RETRY_SCHEDULED`, `FAILED`, `ABANDONED`), worker ID, error, and timestamps.
+Append-only per-attempt outcome (`SENT`, `RETRY_SCHEDULED`, `FAILED`, `ABANDONED`), worker ID, allowlisted failure code and generic message, and database timestamps.
+
+### `notification_replay_events`
+
+Append-only replay sequence, new delivery cycle, actor ID, request ID, channel (`HTTP` or `CLI`), required reason, and database timestamp. HTTP actors are authenticated managers; CLI operator identities are self-asserted by users who already have database/config access.
 
 Database checks reinforce state/assignee consistency, lease consistency, terminal scheduling, creator immutability, completed immutability, unique notification intent, and append-only histories.
 
@@ -256,18 +260,20 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 6. Insert a unique `PENDING` delivery with a stable message ID.
 7. Commit.
 8. Return the updated item and ETag.
-9. A worker claims due rows with an expiring PostgreSQL lease.
+9. A worker claims exactly one due row immediately before sending it. PostgreSQL time controls eligibility and a fresh database UUID fences the expiring lease.
 10. The same real SMTP adapter connects to Mailpit locally or a configured provider.
-11. On server acceptance, atomically mark `SENT` and append a `SENT` attempt.
-12. On retryable failure, append `RETRY_SCHEDULED`, clear the lease, and set a bounded jittered retry time.
-13. On permanent/exhausted failure, append `FAILED` and expose terminal state.
+11. On server acceptance, atomically and conditionally mark `SENT` and append a `SENT` attempt only while the owner/token/attempt lease fence remains current and unexpired.
+12. On retryable failure, append `RETRY_SCHEDULED`, clear the lease fence, and set a bounded jittered retry delay from database time.
+13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
 
 ## 13. Delivery guarantees and limitations
 
 - **Database guarantee:** a successful assignment response cannot exist without its assignment event and durable notification row.
 - **Processing guarantee:** pending rows survive API/worker restarts.
-- **Worker concurrency:** multiple workers cannot claim the same row at the same time under normal PostgreSQL semantics.
+- **Worker concurrency:** multiple workers cannot claim the same row at the same time under normal PostgreSQL semantics; a worker never reserves later rows while sending its current row.
+- **Completion fencing:** stale owners, tokens, attempts, and expired leases cannot complete a delivery.
+- **Clock source:** PostgreSQL controls every persisted queue eligibility, lease, retry, completion, abandonment, and replay timestamp.
 - **Delivery semantics:** at least once.
 - **`SENT`:** the SMTP server accepted the completed message transaction.
 - **Not guaranteed:** inbox delivery, bounce-free delivery, opens, exactly once.
@@ -499,7 +505,7 @@ All application errors use:
 }
 ```
 
-Stable codes include authentication required/unavailable, permission denied, not found, invalid input, invalid transition, assignment conflict, concurrent modification, idempotency-key reuse, assignee/reassignment errors, and notification replay conflict.
+Stable codes include authentication required/unavailable, permission denied, not found, invalid input, invalid transition, assignment conflict, concurrent modification, idempotency-key reuse, assignee/reassignment errors, notification replay conflict, and `NOTIFICATION_REPLAY_LIMIT_REACHED` after delivery cycle 10.
 
 SQL, SMTP credentials, provider responses containing sensitive details, and internal stack traces are not returned to clients.
 
@@ -568,20 +574,20 @@ The suite protects:
 
 - lifecycle and authorization policy;
 - assignee role and creator/completed invariants;
-- create idempotency;
+- immutable create-idempotency snapshots, including concurrent same-key requests;
 - atomic assignment/history/outbox behavior;
 - forced outbox-insert rollback;
 - concurrent assignment and transition results;
 - stable pagination boundaries;
 - migration/constraint behavior;
 - seed idempotency;
-- concurrent notification claims and lease recovery;
-- retry, terminal failure, replay, and attempt history;
-- real TCP SMTP delivery and error classification;
+- one-row concurrent notification claims, UUID fencing, database-clock scheduling, and lease recovery;
+- safe retry/terminal failure codes, replay attribution/cycle limits, and append-only attempt/replay history;
+- real TCP SMTP delivery, stage-aware classification, and provider-text redaction;
 - HTTP authentication, scoping, error shape, ETags, and full PostgreSQL-backed flow;
 - OpenAPI route presence.
 
-In the repository-construction environment, Docker, a PostgreSQL server, and `golangci-lint` were unavailable. Those checks are represented in Compose/CI but must be executed in a capable environment before treating the submission as fully verified.
+Database-backed and lint verification require a reachable PostgreSQL server, Docker for the Compose smoke path, and `golangci-lint`. A skipped database test is not successful verification; run the full gates in a capable environment before treating a change as verified.
 
 ## 22. Operability
 
@@ -591,8 +597,8 @@ In the repository-construction environment, Docker, a PostgreSQL server, and `go
 - Worker liveness/readiness/metrics: port 9091 equivalents
 - JSON logs to stdout
 - Request ID in API responses and error bodies
-- Manager notification list/get includes attempts, last error, lease, schedule, and sent timestamps
-- CLI replay: `go run ./cmd/replay-notification <notification-uuid>`
+- Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; lease tokens remain internal
+- CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
 Detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures are in [`docs/operations.md`](docs/operations.md).
 
@@ -632,7 +638,7 @@ Before production:
 - The API intentionally cannot start in `APP_ENV=production` until a production authenticator replaces the development token adapter.
 - SMTP exactly-once delivery is impossible with this generic interface.
 - No bounce/delivery/open webhooks.
-- Manual replay actor is in structured logs, not a dedicated immutable operator-audit table.
+- Replay attribution is immutable, but CLI operator identity is self-asserted by a user with database/config access rather than independently authenticated.
 - No general edit or administrative correction workflow.
 - Reassignment is rejected after work starts.
 - No cancel, delete, unassign, reopen, or retention/archive process.
@@ -672,7 +678,7 @@ PostgreSQL will become the first shared pressure point: connection limits, outbo
 
 ### 5. What did you intentionally simplify or defer, and what debt did you accept?
 
-I deferred production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, full operator audit, and compliance retention. The original narrow cgo `libpq` accommodation was replaced before submission with maintained pgx while preserving `database/sql` boundaries. I also accepted process-local counters and sequential delivery inside each worker process.
+I deferred production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, operator/configuration audit beyond the implemented replay ledger, and compliance retention. The original narrow cgo `libpq` accommodation was replaced before submission with maintained pgx while preserving `database/sql` boundaries. I also accepted process-local counters and sequential delivery inside each worker process.
 
 ### 6. What would you put in place before production?
 
@@ -680,7 +686,7 @@ Externally verified OIDC/JWT, secret management, TLS PostgreSQL/SMTP, HA databas
 
 ### 7. How would you evolve for audit history, webhooks, or multi-team usage?
 
-For audit, add immutable operator/configuration events with actor, reason, source, correlation ID, retention, and export policy. For webhooks, add subscriptions, signing secrets, a separate transactional webhook outbox, delivery attempts, replay, endpoint disablement, and ordering/version semantics. For multi-team, add `team_id` to every ownership and idempotency boundary, backfill safely, scope every index/query, derive team from trusted identity, consider RLS as defense in depth, and test cross-tenant non-disclosure.
+For audit, extend the immutable replay ledger to other operator/configuration events and define retention and export policy. For webhooks, add subscriptions, signing secrets, a separate transactional webhook outbox, delivery attempts, replay, endpoint disablement, and ordering/version semantics. For multi-team, add `team_id` to every ownership and idempotency boundary, backfill safely, scope every index/query, derive team from trusted identity, consider RLS as defense in depth, and test cross-tenant non-disclosure.
 
 ### 8. How would you onboard another engineer?
 

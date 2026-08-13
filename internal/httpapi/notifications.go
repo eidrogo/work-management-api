@@ -52,7 +52,14 @@ func (server *Server) handleNotification(w http.ResponseWriter, r *http.Request)
 			server.writeError(w, r, methodNotAllowed(http.MethodPost))
 			return
 		}
-		delivery, err := server.notifications.Replay(r.Context(), actor, id)
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		if err := server.decodeJSON(w, r, &body); err != nil {
+			server.writeError(w, r, err)
+			return
+		}
+		delivery, err := server.notifications.Replay(r.Context(), actor, id, notifications.ReplayInput{Reason: body.Reason, RequestID: requestIDFrom(r.Context())})
 		if err != nil {
 			server.writeError(w, r, err)
 			return

@@ -32,6 +32,38 @@ func TestProductionRejectsDevelopmentAuthAndInsecureDB(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerRequiresLeaseLongerThanOneSMTPTimeout(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{
+		"DATABASE_URL":      "postgres://localhost/work?sslmode=disable",
+		"SMTP_HOST":         "smtp.example.test",
+		"SMTP_FROM":         "work@example.test",
+		"SMTP_TLS_MODE":     "plain",
+		"SMTP_TIMEOUT":      "10s",
+		"WORKER_BATCH_SIZE": "100",
+	}
+	for _, test := range []struct {
+		name, lease string
+		wantError   bool
+	}{
+		{name: "equal timeout rejected", lease: "10s", wantError: true},
+		{name: "one timeout plus one second accepted regardless of batch", lease: "11s"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			values := make(map[string]string, len(base)+1)
+			for key, value := range base {
+				values[key] = value
+			}
+			values["LEASE_DURATION"] = test.lease
+			_, err := LoadWorker(mapLookup(values))
+			if (err != nil) != test.wantError {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func mapLookup(values map[string]string) LookupEnv {
 	return func(key string) (string, bool) { value, ok := values[key]; return value, ok }
 }

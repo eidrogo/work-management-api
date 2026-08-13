@@ -26,7 +26,7 @@ type WorkItemApplication interface {
 type NotificationApplication interface {
 	List(context.Context, auth.Principal, notifications.ListInput) (notifications.Page, error)
 	Get(context.Context, auth.Principal, string) (notifications.Delivery, error)
-	Replay(context.Context, auth.Principal, string) (notifications.Delivery, error)
+	Replay(context.Context, auth.Principal, string, notifications.ReplayInput) (notifications.Delivery, error)
 }
 type MetricRecorder interface {
 	RecordHTTP(string, string, int, time.Duration)
