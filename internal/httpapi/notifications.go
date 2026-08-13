@@ -56,16 +56,19 @@ func (server *Server) handleNotification(w http.ResponseWriter, r *http.Request)
 			Reason string `json:"reason"`
 		}
 		if err := server.decodeJSON(w, r, &body); err != nil {
+			server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationNotificationReplay, notificationID: id, err: err})
 			server.writeError(w, r, err)
 			return
 		}
 		delivery, err := server.notifications.Replay(r.Context(), actor, id, notifications.ReplayInput{Reason: body.Reason, RequestID: requestIDFrom(r.Context())})
 		if err != nil {
+			server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationNotificationReplay, notificationID: id, err: err})
 			server.writeError(w, r, err)
 			return
 		}
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationNotificationReplay, workItemID: delivery.WorkItemID, notificationID: id})
 		if server.metrics != nil {
-			server.metrics.RecordMutation("notification_replay", "success")
+			server.metrics.RecordMutation(mutationOperationNotificationReplay, "success")
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"data": delivery})
 		return

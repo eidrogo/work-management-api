@@ -85,17 +85,19 @@ func (server *Server) handleWorkItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (server *Server) createWorkItem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := principalFrom(r.Context())
 	var body struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 	}
 	if err := server.decodeJSON(w, r, &body); err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationCreate, err: err})
 		server.writeError(w, r, err)
 		return
 	}
-	actor, _ := principalFrom(r.Context())
 	result, err := server.workItems.Create(r.Context(), actor, workitems.CreateInput{Title: body.Title, Description: body.Description, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 	if err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationCreate, err: err})
 		server.writeError(w, r, err)
 		return
 	}
@@ -105,8 +107,9 @@ func (server *Server) createWorkItem(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
+	server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationCreate, workItemID: result.Item.ID, idempotent: &result.Idempotent})
 	if server.metrics != nil {
-		server.metrics.RecordMutation("create", "success")
+		server.metrics.RecordMutation(mutationOperationCreate, "success")
 	}
 	writeJSON(w, status, map[string]any{"data": result.Item, "meta": map[string]bool{"idempotent": result.Idempotent}})
 }
@@ -135,22 +138,25 @@ func (server *Server) getWorkItem(w http.ResponseWriter, r *http.Request, id str
 	writeJSON(w, http.StatusOK, map[string]any{"data": item})
 }
 func (server *Server) assignWorkItem(w http.ResponseWriter, r *http.Request, id string) {
+	actor, _ := principalFrom(r.Context())
 	var body struct {
 		AssigneeID string `json:"assignee_id"`
 		Reason     string `json:"reason"`
 	}
 	if err := server.decodeJSON(w, r, &body); err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationAssignment, workItemID: id, err: err})
 		server.writeError(w, r, err)
 		return
 	}
 	version, err := parseIfMatch(r)
 	if err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationAssignment, workItemID: id, err: err})
 		server.writeError(w, r, err)
 		return
 	}
-	actor, _ := principalFrom(r.Context())
 	result, err := server.workItems.Assign(r.Context(), actor, id, workitems.AssignmentInput{AssigneeID: body.AssigneeID, Reason: body.Reason, ExpectedVersion: version})
 	if err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationAssignment, workItemID: id, err: err})
 		server.writeError(w, r, err)
 		return
 	}
@@ -158,18 +164,24 @@ func (server *Server) assignWorkItem(w http.ResponseWriter, r *http.Request, id 
 	if result.Idempotent {
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
+	server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: mutationOperationAssignment, workItemID: result.Item.ID, idempotent: &result.Idempotent})
 	if server.metrics != nil {
-		server.metrics.RecordMutation("assignment", "success")
+		server.metrics.RecordMutation(mutationOperationAssignment, "success")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result.Item, "meta": map[string]bool{"idempotent": result.Idempotent}})
 }
 func (server *Server) transitionWorkItem(w http.ResponseWriter, r *http.Request, id string, start bool) {
+	actor, _ := principalFrom(r.Context())
+	operation := mutationOperationComplete
+	if start {
+		operation = mutationOperationStart
+	}
 	version, err := parseIfMatch(r)
 	if err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: operation, workItemID: id, err: err})
 		server.writeError(w, r, err)
 		return
 	}
-	actor, _ := principalFrom(r.Context())
 	var result workitems.MutationResult
 	if start {
 		result, err = server.workItems.Start(r.Context(), actor, id, workitems.TransitionInput{ExpectedVersion: version})
@@ -177,6 +189,7 @@ func (server *Server) transitionWorkItem(w http.ResponseWriter, r *http.Request,
 		result, err = server.workItems.Complete(r.Context(), actor, id, workitems.TransitionInput{ExpectedVersion: version})
 	}
 	if err != nil {
+		server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: operation, workItemID: id, err: err})
 		server.writeError(w, r, err)
 		return
 	}
@@ -184,11 +197,8 @@ func (server *Server) transitionWorkItem(w http.ResponseWriter, r *http.Request,
 	if result.Idempotent {
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
+	server.logMutation(r, mutationLogResult{actorID: actor.ID, operation: operation, workItemID: result.Item.ID, idempotent: &result.Idempotent})
 	if server.metrics != nil {
-		operation := "complete"
-		if start {
-			operation = "start"
-		}
 		server.metrics.RecordMutation(operation, "success")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result.Item, "meta": map[string]bool{"idempotent": result.Idempotent}})

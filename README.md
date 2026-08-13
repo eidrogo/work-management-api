@@ -598,6 +598,7 @@ Commands and exact observed outcomes are recorded in [`docs/assessment/verificat
 - Worker admin liveness/readiness/metrics: the equivalent routes on `127.0.0.1:9091`
 - JSON logs to stdout
 - Request ID in API responses and error bodies
+- One separate `api mutation` record per authenticated create, assignment, start, complete, or notification replay result. Every record has `request_id`, `actor_id`, `operation`, and `outcome`; successes add safe resource IDs and work-item `idempotent` state, while failures add only stable `status`/`error_code` plus a validated route resource ID when available.
 - Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; each detail aggregate uses one read-only repeatable-read snapshot, and lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
@@ -606,6 +607,8 @@ Commands and exact observed outcomes are recorded in [`docs/assessment/verificat
 Detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures are in [`docs/operations.md`](docs/operations.md).
 
 HTTP metrics retain at most 1,024 distinct canonical `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
+
+Mutation logs intentionally exclude bearer tokens, idempotency keys, email/display names, titles, descriptions, assignment/replay reasons, request and notification payloads, and raw provider/SMTP/SQL errors. The generic `http request` access record remains separate. Work-item history is durable but has no request-ID column, so do not treat it as a replacement for live request/mutation log correlation.
 
 ## 23. Security considerations
 

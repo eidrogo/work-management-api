@@ -36,6 +36,12 @@ curl --fail http://127.0.0.1:9090/metrics
 curl --fail http://127.0.0.1:9091/metrics
 ```
 
+## Mutation log correlation
+
+Each authenticated semantic create, assignment, start, complete, or notification replay attempt emits exactly one handler-level JSON record with message `api mutation`, separate from the generic `http request` access record. All mutation records contain `request_id`, the server-authenticated `actor_id`, an `operation` from `create`, `assignment`, `start`, `complete`, or `notification_replay`, and `outcome` (`success` or `failure`). Successful work-item mutations add the returned `work_item_id` and `idempotent`; a successful notification replay adds the route `notification_id` and returned `work_item_id`. Failures add only numeric `status`, stable `error_code`, and a syntactically valid route resource ID when one is available.
+
+Do not put bearer tokens, idempotency keys, email/display names, titles, descriptions, assignment/replay reasons, bodies, notification payloads, or provider/SMTP/SQL details in these records. The append-only work-item history remains the durable domain audit trail but has no request-ID column; use the live mutation record when correlating a client request to its authenticated actor and resource.
+
 ## Metrics bounds and interpretation
 
 HTTP metrics accept only methods `GET`, `POST`, `PUT`, and `OTHER`, and only the documented business templates plus `/unknown`. Each process retains at most 1,024 `(method, route, status)` keys. A rejected new key increments label-free `work_management_http_series_dropped_total`; existing keys continue updating and rejected keys are not retained.
