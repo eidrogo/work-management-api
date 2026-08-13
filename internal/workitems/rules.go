@@ -38,6 +38,9 @@ func AuthorizeRead(actor auth.Principal, item WorkItem) error {
 }
 
 func ValidateCreateInput(input CreateInput) (CreateInput, error) {
+	if strings.ContainsAny(input.Title, "\r\n") {
+		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Title must be a single line.", map[string]any{"field": "title", "maximum": 200})
+	}
 	input.Title = strings.TrimSpace(input.Title)
 	input.Description = strings.TrimSpace(input.Description)
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)

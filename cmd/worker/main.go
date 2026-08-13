@@ -28,6 +28,17 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+type drainingWorker interface {
+	RunUntilStopped(context.Context, context.Context) error
+}
+
+type adminServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+	Close() error
+}
+
 func run() error {
 	cfg, err := config.LoadWorker(nil)
 	if err != nil {
@@ -62,21 +73,84 @@ func run() error {
 		return err
 	}
 	adminServer := &http.Server{Addr: cfg.HTTPAddress, Handler: adminHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute, ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError)}
-	runCtx, cancelRun := context.WithCancel(rootCtx)
-	defer cancelRun()
-	errorsChannel := make(chan error, 2)
-	go func() { errorsChannel <- worker.Run(runCtx) }()
-	go func() { errorsChannel <- adminServer.ListenAndServe() }()
+	return serveWorker(rootCtx, cfg.ShutdownTimeout, worker, adminServer)
+}
+
+func serveWorker(ctx context.Context, shutdownTimeout time.Duration, worker drainingWorker, admin adminServer) error {
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	defer stopClaims()
+	attemptCtx, forceCancel := context.WithCancel(context.Background())
+	defer forceCancel()
+	workerResult := make(chan error, 1)
+	adminResult := make(chan error, 1)
+	go func() { workerResult <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	go func() { adminResult <- admin.ListenAndServe() }()
+
+	workerDone, adminDone := false, false
+	var result error
 	select {
-	case <-rootCtx.Done():
-	case runErr := <-errorsChannel:
-		if runErr != nil && !errors.Is(runErr, http.ErrServerClosed) {
-			cancelRun()
-			return runErr
+	case <-ctx.Done():
+	case workerErr := <-workerResult:
+		workerDone = true
+		workerResult = nil
+		if workerErr == nil {
+			result = errors.New("notification worker stopped unexpectedly")
+		} else {
+			result = fmt.Errorf("notification worker: %w", workerErr)
+		}
+	case adminErr := <-adminResult:
+		adminDone = true
+		adminResult = nil
+		if adminErr == nil || errors.Is(adminErr, http.ErrServerClosed) {
+			result = errors.New("worker admin listener stopped unexpectedly")
+		} else {
+			result = fmt.Errorf("worker admin listener: %w", adminErr)
 		}
 	}
-	cancelRun()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
-	return adminServer.Shutdown(shutdownCtx)
+	stopClaims()
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelShutdown()
+	var shutdownResult chan error
+	shutdownDone := adminDone
+	if !shutdownDone {
+		shutdownResult = make(chan error, 1)
+		go func() { shutdownResult <- admin.Shutdown(shutdownCtx) }()
+	}
+	deadline := shutdownCtx.Done()
+	forced := false
+	for !workerDone || !adminDone || !shutdownDone {
+		select {
+		case workerErr := <-workerResult:
+			workerDone = true
+			workerResult = nil
+			if workerErr != nil {
+				result = errors.Join(result, fmt.Errorf("notification worker: %w", workerErr))
+			}
+		case adminErr := <-adminResult:
+			adminDone = true
+			adminResult = nil
+			if adminErr != nil && !errors.Is(adminErr, http.ErrServerClosed) {
+				result = errors.Join(result, fmt.Errorf("worker admin listener: %w", adminErr))
+			}
+		case shutdownErr := <-shutdownResult:
+			shutdownDone = true
+			shutdownResult = nil
+			if shutdownErr != nil && (!forced || !errors.Is(shutdownErr, context.DeadlineExceeded)) {
+				result = errors.Join(result, fmt.Errorf("shut down worker admin listener: %w", shutdownErr))
+				if closeErr := admin.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+					result = errors.Join(result, fmt.Errorf("force close worker admin listener: %w", closeErr))
+				}
+			}
+		case <-deadline:
+			forced = true
+			deadline = nil
+			result = errors.Join(result, fmt.Errorf("worker shutdown grace period expired: %w", context.DeadlineExceeded))
+			forceCancel()
+			if closeErr := admin.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				result = errors.Join(result, fmt.Errorf("force close worker admin listener: %w", closeErr))
+			}
+		}
+	}
+	return result
 }

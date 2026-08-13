@@ -1,6 +1,6 @@
 # Verification Evidence
 
-All commands below were executed locally during Task 4 across 2026-08-12 and 2026-08-13 (America/Argentina/Buenos_Aires). PASS sections use the candidate/final code; deliberate FAIL sections capture the named gap before its correction. Output excerpts are copied from those commands; durations, generated UUIDs, project names, and ephemeral ports are omitted where they are not stable contract evidence.
+All commands below were executed locally during Task 4 and the final whole-branch reliability pass across 2026-08-12 and 2026-08-13 (America/Argentina/Buenos_Aires). PASS sections use the candidate/final code; deliberate FAIL sections capture the named gap before its correction. Output excerpts are copied from those commands; durations, generated UUIDs, project names, and ephemeral ports are omitted where they are not stable contract evidence.
 
 ## PASS — tool environment
 
@@ -432,3 +432,124 @@ git diff --cached --exit-code -- .
 ```
 
 Result: exit 0. The final `clean-check` also required `git status --porcelain --untracked-files=all` to be empty; the subsequent explicit status check was empty.
+
+## FAIL then PASS — final worker drain and SMTP cancellation regressions
+
+Commands:
+
+```bash
+go test -count=1 ./internal/notifications \
+  -run TestWorkerRunUntilStoppedDrainsActiveAttemptBeforeReturning
+go test -count=1 ./cmd/worker -run 'TestServeWorker'
+go test -count=1 ./internal/platform/email \
+  -run TestSMTPClientCancellationInterruptsBlockedTransaction
+go test -count=1 ./internal/notifications \
+  -run TestWorkerRunUntilStoppedPreservesCompletionErrorAfterClaimsStop
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=1 ./internal/notifications \
+  -run 'TestWorkerDrainPersistsActiveCompletionBeforeReturning|TestWorkerForcedDrainIsBoundedAndLeaseRecovers'
+```
+
+RED evidence:
+
+```text
+worker.RunUntilStopped undefined
+undefined: serveWorker
+context cancellation did not interrupt the SMTP transaction
+TestWorkerRunUntilStoppedPreservesCompletionErrorAfterClaimsStop: error=<nil>
+TestWorkerRunUntilStoppedPreservesCompletionErrorAfterClaimsStop/context_canceled: error=<nil>
+already-stopped admin waited for shutdown timeout: context deadline exceeded
+```
+
+GREEN evidence:
+
+```text
+PASS: TestWorkerRunUntilStoppedDrainsActiveAttemptBeforeReturning
+PASS: TestServeWorkerDrainsOnSignalAndReapsBothComponents
+PASS: TestServeWorkerForcesCancellationAtGraceDeadlineAndReapsBothComponents
+PASS: TestServeWorkerPreservesFirstComponentError
+PASS: TestServeWorkerPreservesContextCanceledCompletionErrorDuringDrain
+PASS: TestServeWorkerForceClosesAdminAfterPromptShutdownError
+PASS: TestSMTPClientCancellationInterruptsBlockedTransaction
+PASS: TestWorkerRunUntilStoppedPreservesCompletionErrorAfterClaimsStop
+PASS: TestWorkerDrainPersistsActiveCompletionBeforeReturning
+PASS: TestWorkerForcedDrainIsBoundedAndLeaseRecovers
+```
+
+The cancellation interrupt installs the ordinary SMTP deadline before the cancellation callback, so a concurrently canceled context cannot have its immediate deadline overwritten. Signal-driven clean drain retains an uncanceled attempt context through SMTP and fenced completion; only grace expiry cancels it. Genuine completion errors remain errors even when their value is `context.Canceled`, and an already-reaped admin listener is not passed to a potentially blocking `Shutdown` call.
+
+## FAIL then PASS — final claim and notification-page plans
+
+Command:
+
+```bash
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=1 -v ./internal/notifications \
+  -run 'TestClaimNextSelectsEarliestEligibilityAcrossPendingAndExpired|TestClaimCandidatePlansUseBoundedPartialIndexes|TestNotificationListPlansUseMatchingIndexesWithoutSorts|TestUnfilteredNotificationKeysetPagination|TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps'
+```
+
+Initial JSON plans exposed a `Sort` over `notification_deliveries_status_page_idx` for the expired candidate and failed to require the filtered list indexes. After the production-query correction and set-based fixture calibration:
+
+```text
+PASS: TestClaimNextSelectsEarliestEligibilityAcrossPendingAndExpired
+PASS: TestClaimCandidatePlansUseBoundedPartialIndexes
+PASS: TestNotificationListPlansUseMatchingIndexesWithoutSorts
+PASS: TestUnfilteredNotificationKeysetPagination
+PASS: TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps/status
+PASS: TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps/work_item
+```
+
+The two claim checks use the exact production candidate SQL against a 12,000-row mixed backlog. The three list checks use the production query builder against 12,000 tied timestamps. They run under default planner settings, reject `Seq Scan`, `Sort`, and `Incremental Sort`, and require the matching partial/page index.
+
+## FAIL then PASS — final title and persisted worker-ID contracts
+
+Commands:
+
+```bash
+go test -count=1 -v ./internal/workitems ./internal/httpapi ./internal/notifications \
+  -run 'TestValidateCreateInputEnforcesSMTPCompatibleTitleBoundaries|TestCreateRejectsHeaderNewlineTitleWithoutPersistence|TestEveryAcceptedTitleRendersAHeaderValidSubject'
+go test -count=1 -v ./internal/config ./internal/notifications \
+  -run 'TestLoadWorkerValidatesPersistedWorkerIDContract|TestGeneratedWorkerID|TestValidateWorkerIDContract|TestNewWorkerRejectsInvalidWorkerIDBelowConfig|TestClaimNextRejectsInvalidWorkerIDBeforeSQLMutation'
+go test -count=1 -v ./cmd/worker \
+  -run TestRunRejectsInvalidWorkerIDBeforeOpeningDependencies
+```
+
+RED evidence included accepted LF/CR/CRLF titles, HTTP `201` for a newline title, a 1,500-octet MIME-Q Subject line, and missing shared worker-ID validation. Final evidence:
+
+```text
+PASS: title 200-rune boundary
+PASS: title 201-rune boundary
+PASS: title LF, leading LF, CR, and CRLF rejection
+PASS: rejected HTTP create left no item, event, idempotency row, or notification
+PASS: accepted short ASCII, 200 two-byte-rune, and 200 four-byte-rune titles rendered header-valid bounded subjects with the complete title in the body
+PASS: configured/generated/NewWorker/ClaimNext worker-ID boundaries, including 255/256 runes, multibyte input, blank/control/NUL/invalid UTF-8, and long/invalid hostnames
+PASS: invalid configured WORKER_ID stopped process startup before dependencies/listener readiness
+```
+
+## PASS — final reliability candidate Compose authority
+
+Command:
+
+```bash
+PATH=/tmp/work-management-task2-bin:$PATH \
+VERIFY_LOG_DIR=/tmp/work-management-api-final-fix-evidence/precommit-compose-final \
+make compose-smoke
+```
+
+Evidence:
+
+```text
+PASS: owned test child status 42 propagated unchanged and cleanup reaped the child
+PASS: SIGTERM reached the owned test process group, reaped it, and began Compose cleanup promptly
+PASS: SIGINT reached the owned test process group, reaped it, and began Compose cleanup promptly
+PASS: verification Compose config is valid
+PASS: PostgreSQL test database is fresh and loopback-published
+PASS: go-test-normal completed with zero skips (145 top-level tests; 18 packages)
+PASS: go-test-race completed with zero skips (145 top-level tests; 18 packages)
+PASS: migrate and seed completed successfully
+PASS: all six published ports are ephemeral IPv4 loopback mappings
+PASS: API and worker admin live, ready, and metrics endpoints respond
+PASS: public API serves business routes and excludes operational routes
+PASS: Mailpit accepted exactly one current SMTP transaction
+PASS: durable SENT detail matches the current Mailpit Message-ID and attempt
+PASS: authoritative Compose verification completed
+PASS: Compose cleanup removed all project containers, networks, and volumes
+```

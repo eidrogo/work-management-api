@@ -219,6 +219,39 @@ func TestCreateIdempotencyHTTPReturnsOriginalETagAndBody(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsHeaderNewlineTitleWithoutPersistence(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	_, _ = seed.Apply(context.Background(), db, clock.Fixed{Time: now})
+	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.Fixed{Time: now})
+	itemService, _ := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+	store, _ := notifications.NewStore(db)
+	notificationService, _ := notifications.NewService(store)
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	beforeItems := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`)
+	beforeEvents := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`)
+	response := doJSON(t, server.Client(), http.MethodPost, server.URL+"/v1/work-items", seed.ManagerToken,
+		map[string]string{"Idempotency-Key": "rejected-header-title"}, []byte(`{"title":"Quarterly handoff\nURGENT"}`))
+	assertHTTPError(t, response, http.StatusBadRequest, "INVALID_INPUT")
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`); got != beforeItems {
+		t.Fatalf("work items=%d want=%d", got, beforeItems)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`); got != beforeEvents {
+		t.Fatalf("events=%d want=%d", got, beforeEvents)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM idempotency_keys WHERE idempotency_key='rejected-header-title'`); got != 0 {
+		t.Fatalf("idempotency records=%d", got)
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries`); got != 0 {
+		t.Fatalf("notifications=%d", got)
+	}
+}
+
 func TestReplayHTTPPersistsExactRequestIDAndAuthenticatedActor(t *testing.T) {
 	db := postgrestest.Open(t)
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)

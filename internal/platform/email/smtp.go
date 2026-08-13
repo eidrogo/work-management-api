@@ -89,6 +89,8 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = raw.SetDeadline(deadline)
 	}
+	stopCancellationInterrupt := context.AfterFunc(ctx, func() { _ = raw.SetDeadline(time.Now()) })
+	defer stopCancellationInterrupt()
 	connection := raw
 	if sender.config.TLSMode == TLSImplicit {
 		tlsConnection := tls.Client(raw, sender.tlsConfig())

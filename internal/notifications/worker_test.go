@@ -2,13 +2,19 @@ package notifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"mime"
+
+	"github.com/eidrogo/work-management-api/internal/workitems"
 )
 
 func TestWorkerClaimsImmediatelyBeforeEachSend(t *testing.T) {
@@ -43,6 +49,157 @@ func TestWorkerClaimsImmediatelyBeforeEachSend(t *testing.T) {
 	}
 }
 
+func TestWorkerRunUntilStoppedDrainsActiveAttemptBeforeReturning(t *testing.T) {
+	t.Parallel()
+	recorder := &workerEventRecorder{}
+	queue := &recordingQueue{recorder: recorder, deliveries: []Delivery{
+		workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1),
+		workerTestDelivery("22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222", 1),
+	}}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	worker, err := NewWorker(queue, blockingWorkerSender{recorder: recorder, entered: entered, release: release}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-a", BatchSize: 2, LeaseDuration: time.Minute, MaxAttempts: 3,
+		BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	defer cancelAttempt()
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin the active send")
+	}
+	stopClaims()
+	select {
+	case err = <-result:
+		t.Fatalf("worker returned before the active attempt drained: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err = <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after the active attempt completed")
+	}
+	want := []string{
+		"claim:11111111-1111-4111-8111-111111111111",
+		"send:11111111-1111-4111-8111-111111111111",
+		"complete:11111111-1111-4111-8111-111111111111",
+	}
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events=%v want=%v", got, want)
+	}
+}
+
+func TestWorkerRunUntilStoppedPreservesCompletionErrorAfterClaimsStop(t *testing.T) {
+	t.Parallel()
+	for name, sentinel := range map[string]error{
+		"sentinel":         errors.New("fenced completion failed"),
+		"context canceled": context.Canceled,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertCompletionErrorAfterClaimsStop(t, sentinel)
+		})
+	}
+}
+
+func assertCompletionErrorAfterClaimsStop(t *testing.T, sentinel error) {
+	t.Helper()
+	recorder := &workerEventRecorder{}
+	queue := &recordingQueue{recorder: recorder, deliveries: []Delivery{
+		workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1),
+	}, completeError: sentinel}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	worker, err := NewWorker(queue, blockingWorkerSender{recorder: recorder, entered: entered, release: release}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-a", BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+		BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	defer cancelAttempt()
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin the active send")
+	}
+	stopClaims()
+	close(release)
+	select {
+	case err = <-result:
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not return after completion failed")
+	}
+}
+
+func TestEveryAcceptedTitleRendersAHeaderValidSubject(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		title       string
+		wantSubject string
+	}{
+		{title: "Inspect loading dock", wantSubject: "New work assigned: Inspect loading dock"},
+		{title: strings.Repeat("é", 200)},
+		{title: strings.Repeat("😀", 200)},
+	} {
+		title := test.title
+		input, err := workitems.ValidateCreateInput(workitems.CreateInput{Title: title, IdempotencyKey: "render-title"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		delivery := workerTestDelivery("11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111", 1)
+		delivery.Payload = []byte(fmt.Sprintf(`{"work_item_id":"%s","work_item_title":%q,"assignee_name":"Alice","assigned_by_name":"Maya","assigned_at":"2026-08-12T12:00:00Z"}`, delivery.ID, input.Title))
+		message, err := renderAssignmentMessage(delivery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(message.Subject) == "" || strings.ContainsAny(message.Subject, "\r\n") {
+			t.Fatalf("subject=%q", message.Subject)
+		}
+		if test.wantSubject != "" && message.Subject != test.wantSubject {
+			t.Fatalf("subject=%q want=%q", message.Subject, test.wantSubject)
+		}
+		if !strings.Contains(message.TextBody, "Title: "+title+"\n") {
+			t.Fatalf("full title missing from body: %q", message.TextBody)
+		}
+		encoded := mime.QEncoding.Encode("UTF-8", message.Subject)
+		if len("Subject: ")+len(encoded) > 998 {
+			t.Fatalf("encoded subject line is %d octets", len("Subject: ")+len(encoded))
+		}
+	}
+}
+
+func TestNewWorkerRejectsInvalidWorkerIDBelowConfig(t *testing.T) {
+	t.Parallel()
+	for _, workerID := range []string{strings.Repeat("a", 256), "worker\nid", string([]byte{'w', 0xff})} {
+		recorder := &workerEventRecorder{}
+		worker, err := NewWorker(&recordingQueue{recorder: recorder}, recordingSender{recorder: recorder}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+			WorkerID: workerID, BatchSize: 1, LeaseDuration: time.Minute, MaxAttempts: 3,
+			BackoffBase: time.Second, BackoffMax: time.Minute, PollInterval: time.Second, Random: func() float64 { return 0 },
+		})
+		if err == nil || worker != nil {
+			t.Fatalf("worker ID %q unexpectedly accepted: worker=%v error=%v", workerID, worker, err)
+		}
+	}
+}
+
 type workerEventRecorder struct {
 	mu     sync.Mutex
 	events []string
@@ -60,8 +217,9 @@ func (recorder *workerEventRecorder) snapshot() []string {
 }
 
 type recordingQueue struct {
-	recorder   *workerEventRecorder
-	deliveries []Delivery
+	recorder      *workerEventRecorder
+	deliveries    []Delivery
+	completeError error
 }
 
 func (queue *recordingQueue) ClaimNext(_ context.Context, request ClaimRequest) (Delivery, bool, error) {
@@ -76,7 +234,7 @@ func (queue *recordingQueue) ClaimNext(_ context.Context, request ClaimRequest) 
 }
 func (queue *recordingQueue) Complete(_ context.Context, completion Completion) error {
 	queue.recorder.add("complete:" + completion.DeliveryID)
-	return nil
+	return queue.completeError
 }
 
 type recordingSender struct{ recorder *workerEventRecorder }
@@ -84,6 +242,23 @@ type recordingSender struct{ recorder *workerEventRecorder }
 func (sender recordingSender) Send(_ context.Context, message Message) error {
 	sender.recorder.add("send:" + message.MessageID)
 	return nil
+}
+
+type blockingWorkerSender struct {
+	recorder *workerEventRecorder
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (sender blockingWorkerSender) Send(ctx context.Context, message Message) error {
+	sender.recorder.add("send:" + message.MessageID)
+	close(sender.entered)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-sender.release:
+		return nil
+	}
 }
 
 func workerTestDelivery(id, messageID string, attempt int) Delivery {

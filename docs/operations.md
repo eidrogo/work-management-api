@@ -8,6 +8,8 @@
 - Bounded HTTP and SMTP operations.
 - Prometheus-compatible request, authorization, mutation, delivery, backlog, and age metrics.
 - One-row notification claims with PostgreSQL-time scheduling, UUID-fenced expiring leases, and abandoned-attempt recovery.
+- Signal-driven worker drain: stop claims immediately, drain one active SMTP/fenced completion, then force-cancel only at `SHUTDOWN_TIMEOUT` and reap both worker/admin goroutines.
+- Startup worker-ID validation matching the 255-character PostgreSQL columns, repeated at worker/store boundaries.
 - Bounded retries, explicit terminal failure, safe persisted error fields, and reasoned replay with immutable attribution and a 10-cycle ceiling.
 - Migration checksums and advisory locking.
 
@@ -83,6 +85,8 @@ The HTTP path stores the authenticated manager and request ID. The CLI requires 
 ## Worker outage and lease recovery
 
 A stopped worker does not roll back assignments: pending rows remain durable and backlog age increases. Restart or scale workers after restoring dependencies. Another worker can reclaim only after PostgreSQL time reaches the lease expiry; recovery appends `ABANDONED`, uses a fresh database UUID token, and starts a new attempt. Stale owners/tokens/attempts and expired leases cannot complete a row. `LEASE_DURATION` must exceed `SMTP_TIMEOUT`. `WORKER_BATCH_SIZE` limits sequential claim/send iterations per poll; it does not reserve a batch of leases.
+
+On `SIGINT`/`SIGTERM`, the worker stops new claims and concurrently shuts down its admin server. An already active SMTP transaction and its fenced database completion retain a live context for up to `SHUTDOWN_TIMEOUT`. A clean drain exits successfully. At the deadline, SMTP I/O is interrupted, the admin server is force-closed, and both goroutines are reaped before the database closes; the row can remain `PROCESSING` until normal lease recovery. Size the shutdown budget for the configured SMTP timeout and expected database completion latency. `WORKER_ID` must be valid UTF-8, 1–255 Unicode code points after trimming, and contain no control characters; invalid configured values prevent startup before readiness.
 
 ## Failure modes
 

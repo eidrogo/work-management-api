@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -35,36 +36,61 @@ type Worker struct {
 }
 
 func NewWorker(queue Queue, sender Sender, logger *slog.Logger, config WorkerConfig) (*Worker, error) {
-	if queue == nil || sender == nil || logger == nil || strings.TrimSpace(config.WorkerID) == "" || config.BatchSize < 1 || config.BatchSize > 100 || config.LeaseDuration <= 0 || config.MaxAttempts < 1 || config.BackoffBase <= 0 || config.BackoffMax < config.BackoffBase || config.PollInterval <= 0 || config.Random == nil {
+	workerID, workerIDErr := ValidateWorkerID(config.WorkerID)
+	if queue == nil || sender == nil || logger == nil || workerIDErr != nil || config.BatchSize < 1 || config.BatchSize > 100 || config.LeaseDuration <= 0 || config.MaxAttempts < 1 || config.BackoffBase <= 0 || config.BackoffMax < config.BackoffBase || config.PollInterval <= 0 || config.Random == nil {
 		return nil, fmt.Errorf("invalid notification worker configuration")
 	}
+	config.WorkerID = workerID
 	return &Worker{queue: queue, sender: sender, logger: logger, config: config}, nil
 }
 func (worker *Worker) Run(ctx context.Context) error {
+	return worker.RunUntilStopped(ctx, ctx)
+}
+func (worker *Worker) RunUntilStopped(claimCtx, attemptCtx context.Context) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		select {
-		case <-ctx.Done():
-			return nil
 		case <-timer.C:
-			processed, err := worker.ProcessBatch(ctx)
-			if err != nil && ctx.Err() == nil {
+			processed, err := worker.processBatch(claimCtx, attemptCtx)
+			if attemptCtx.Err() != nil {
+				return attemptCtx.Err()
+			}
+			if err != nil {
+				if claimCtx.Err() != nil {
+					return err
+				}
 				worker.logger.Error("notification batch failed", "error", err)
+			}
+			if claimCtx.Err() != nil {
+				return nil
 			}
 			delay := worker.config.PollInterval
 			if processed >= worker.config.BatchSize {
 				delay = 0
 			}
 			timer.Reset(delay)
+		case <-claimCtx.Done():
+			return nil
 		}
 	}
 }
 func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
+	return worker.processBatch(ctx, ctx)
+}
+func (worker *Worker) processBatch(claimCtx, attemptCtx context.Context) (int, error) {
 	processed := 0
 	for processed < worker.config.BatchSize {
-		delivery, found, err := worker.queue.ClaimNext(ctx, ClaimRequest{WorkerID: worker.config.WorkerID, LeaseDuration: worker.config.LeaseDuration, MaxAttempts: worker.config.MaxAttempts})
+		select {
+		case <-claimCtx.Done():
+			return processed, nil
+		default:
+		}
+		delivery, found, err := worker.queue.ClaimNext(claimCtx, ClaimRequest{WorkerID: worker.config.WorkerID, LeaseDuration: worker.config.LeaseDuration, MaxAttempts: worker.config.MaxAttempts})
 		if err != nil {
+			if claimCtx.Err() != nil && errors.Is(err, claimCtx.Err()) {
+				return processed, nil
+			}
 			return processed, err
 		}
 		if !found {
@@ -73,10 +99,10 @@ func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
 		message, renderErr := renderAssignmentMessage(delivery)
 		sendErr := renderErr
 		if sendErr == nil {
-			sendErr = worker.sender.Send(ctx, message)
+			sendErr = worker.sender.Send(attemptCtx, message)
 		}
-		if ctx.Err() != nil {
-			return processed, ctx.Err()
+		if attemptCtx.Err() != nil {
+			return processed, attemptCtx.Err()
 		}
 		completion := Completion{DeliveryID: delivery.ID, WorkerID: worker.config.WorkerID, LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount}
 		switch {
@@ -90,7 +116,7 @@ func (worker *Worker) ProcessBatch(ctx context.Context) (int, error) {
 			completion.FailureCode = FailureCodeOf(sendErr)
 			completion.RetryAfter = RetryDelay(worker.config.BackoffBase, worker.config.BackoffMax, delivery.CycleAttemptCount, worker.config.Random())
 		}
-		if err = worker.queue.Complete(ctx, completion); err != nil {
+		if err = worker.queue.Complete(attemptCtx, completion); err != nil {
 			return processed, err
 		}
 		processed++
@@ -123,5 +149,15 @@ func renderAssignmentMessage(delivery Delivery) (Message, error) {
 		fmt.Fprintf(&body, "Assignment reason: %s\n", payload.Reason)
 	}
 	body.WriteString("\nOpen your work queue to review and start the item.\n")
-	return Message{To: delivery.RecipientEmail, ToName: delivery.RecipientName, Subject: "New work assigned: " + payload.WorkItemTitle, TextBody: body.String(), MessageID: delivery.MessageID}, nil
+	return Message{To: delivery.RecipientEmail, ToName: delivery.RecipientName, Subject: assignmentSubject(payload.WorkItemTitle), TextBody: body.String(), MessageID: delivery.MessageID}, nil
+}
+
+func assignmentSubject(title string) string {
+	const prefix = "New work assigned: "
+	const maximumSubjectRunes = 60
+	runes := []rune(title)
+	if len(runes) > maximumSubjectRunes {
+		return prefix + string(runes[:maximumSubjectRunes]) + "…"
+	}
+	return prefix + title
 }

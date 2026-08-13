@@ -47,7 +47,7 @@ flowchart LR
     Worker --> Ops
 ```
 
-The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both servers drain concurrently under one shutdown budget.
+The API and worker are independently runnable processes but share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both API servers drain concurrently under one shutdown budget. A worker signal separately stops new claims, drains its active SMTP/database attempt while shutting down the admin listener, and force-cancels only after that budget; both goroutines are reaped before database close or return.
 
 Direct execution uses loopback defaults for the two administrative listeners. Compose uses wildcard binds inside the containers so forwarding works, while publishing every host port explicitly on `127.0.0.1`. Administrative health and metrics routes are unauthenticated, are absent from the public OpenAPI document, and need a private network boundary outside local development.
 
@@ -76,7 +76,8 @@ sequenceDiagram
     API-->>Manager: 200 + ETag
 
     loop Up to the configured per-poll send limit
-        Worker->>DB: BEGIN; select one due row<br/>FOR UPDATE SKIP LOCKED using clock_timestamp()
+        Worker->>DB: BEGIN; fetch clock_timestamp() once;<br/>lock at most one row from each ordered partial index
+        Worker->>Worker: choose earliest eligibility / created_at / id
         Worker->>DB: Set owner + fresh DB UUID token<br/>attempt + lease expiry; COMMIT
         Worker->>SMTP: EHLO / optional TLS + AUTH / MAIL / RCPT / DATA
         alt SMTP rejects or transport fails
@@ -113,4 +114,4 @@ Only an allowlisted failure code and fixed generic message are persisted or retu
 - `work_item_events`, `notification_attempts`, and `notification_replay_events` are append-only histories.
 - `notification_deliveries` owns current delivery, retry, safe-error, cycle, schedule, and lease state.
 - PostgreSQL `clock_timestamp()` controls due checks, lease validity, completion fencing, recovery, retry, and replay scheduling; process clocks do not decide persisted eligibility.
-- Work-item and notification lists use covered keyset indexes over their documented sort boundaries. History uses item sequence order. The tests traverse pages and inspect the intended index plans rather than relying on offset scans.
+- Work-item and notification lists use keyset indexes over their documented sort boundaries. History uses item sequence order. Large default-planner tests traverse tied pages and reject sequential scans and sort nodes while requiring the matching notification page index. Claim-plan tests similarly require both ordered partial indexes.

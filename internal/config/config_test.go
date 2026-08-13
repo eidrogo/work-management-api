@@ -3,7 +3,60 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/eidrogo/work-management-api/internal/notifications"
 )
+
+func TestLoadWorkerValidatesPersistedWorkerIDContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		workerID  string
+		wantError bool
+	}{
+		{name: "255 ASCII", workerID: strings.Repeat("a", 255)},
+		{name: "255 multibyte runes", workerID: strings.Repeat("é", 255)},
+		{name: "256 runes", workerID: strings.Repeat("a", 256), wantError: true},
+		{name: "blank", workerID: "   ", wantError: true},
+		{name: "control", workerID: "worker\nid", wantError: true},
+		{name: "invalid UTF-8", workerID: string([]byte{'w', 0xff}), wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := workerValues()
+			values["WORKER_ID"] = test.workerID
+			worker, err := LoadWorker(mapLookup(values))
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "WORKER_ID") {
+					t.Fatalf("worker=%#v error=%v", worker, err)
+				}
+				return
+			}
+			if err != nil || worker.WorkerID != test.workerID {
+				t.Fatalf("worker=%#v error=%v", worker, err)
+			}
+		})
+	}
+}
+
+func TestGeneratedWorkerIDIsValidForLongHostname(t *testing.T) {
+	generated := generatedWorkerID(strings.Repeat("é", 400), 12345)
+	if len([]rune(generated)) > 255 {
+		t.Fatalf("worker ID has %d runes", len([]rune(generated)))
+	}
+	if got, err := notifications.ValidateWorkerID(generated); err != nil || got != generated {
+		t.Fatalf("worker ID=%q validation=%q error=%v", generated, got, err)
+	}
+}
+
+func TestGeneratedWorkerIDSanitizesInvalidHostnameWithoutBreakingUTF8(t *testing.T) {
+	generated := generatedWorkerID(string([]byte{'h', 0xff, '\n', 'x'}), 7)
+	if generated != "h-x-7" {
+		t.Fatalf("worker ID=%q", generated)
+	}
+	if got, err := notifications.ValidateWorkerID(generated); err != nil || got != generated {
+		t.Fatalf("worker ID=%q validation=%q error=%v", generated, got, err)
+	}
+}
 
 func TestLoadAPIDefaultsIncludeLoopbackAdmin(t *testing.T) {
 	t.Parallel()

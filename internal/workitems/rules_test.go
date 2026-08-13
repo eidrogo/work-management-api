@@ -2,10 +2,47 @@ package workitems
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/eidrogo/work-management-api/internal/auth"
 )
+
+func TestValidateCreateInputEnforcesSMTPCompatibleTitleBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		title     string
+		wantError bool
+	}{
+		{name: "200 runes", title: strings.Repeat("é", 200)},
+		{name: "201 runes", title: strings.Repeat("é", 201), wantError: true},
+		{name: "line feed", title: "Quarterly handoff\nURGENT", wantError: true},
+		{name: "leading line feed", title: "\nQuarterly handoff", wantError: true},
+		{name: "carriage return", title: "Quarterly handoff\rURGENT", wantError: true},
+		{name: "CRLF", title: "Quarterly handoff\r\nURGENT", wantError: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateCreateInput(CreateInput{Title: test.title, IdempotencyKey: "title-boundary"})
+			if !test.wantError {
+				if err != nil || got.Title != test.title {
+					t.Fatalf("input=%#v error=%v", got, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error=%v", err)
+			}
+			code, _, details := ErrorContract(err)
+			if code != "INVALID_INPUT" || details["field"] != "title" || details["maximum"] != 200 {
+				t.Fatalf("code=%q details=%v", code, details)
+			}
+		})
+	}
+}
 
 func TestRoleAndLifecycleRules(t *testing.T) {
 	t.Parallel()

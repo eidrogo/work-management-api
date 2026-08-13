@@ -9,6 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/eidrogo/work-management-api/internal/notifications"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -232,13 +236,20 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 	if err != nil {
 		return Worker{}, err
 	}
-	workerID := value(lookup, "WORKER_ID", "")
-	if workerID == "" {
+	configuredWorkerID, configured := lookup("WORKER_ID")
+	workerID := ""
+	if configured {
+		workerID = configuredWorkerID
+	} else {
 		hostname, hostErr := os.Hostname()
-		if hostErr != nil || hostname == "" {
+		if hostErr != nil {
 			hostname = "unknown-host"
 		}
-		workerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
+		workerID = generatedWorkerID(hostname, os.Getpid())
+	}
+	workerID, err = notifications.ValidateWorkerID(workerID)
+	if err != nil {
+		return Worker{}, fmt.Errorf("WORKER_ID is invalid: %w", err)
 	}
 	return Worker{
 		Environment: environment, Database: database, HTTPAddress: httpAddress, WorkerID: workerID,
@@ -248,6 +259,27 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 			FromName: value(lookup, "SMTP_FROM_NAME", "Work Management"), TLSMode: tlsMode,
 			TLSServerName: value(lookup, "SMTP_TLS_SERVER_NAME", host), TLSInsecureSkipVerify: insecure, Timeout: timeout},
 	}, nil
+}
+
+func generatedWorkerID(hostname string, pid int) string {
+	hostname = strings.TrimSpace(strings.ToValidUTF8(hostname, "-"))
+	var valid strings.Builder
+	for _, character := range hostname {
+		if character != 0 && !unicode.IsControl(character) {
+			valid.WriteRune(character)
+		}
+	}
+	hostname = valid.String()
+	if hostname == "" {
+		hostname = "unknown-host"
+	}
+	suffix := fmt.Sprintf("-%d", pid)
+	maximumHostRunes := notifications.MaxWorkerIDRunes - utf8.RuneCountInString(suffix)
+	runes := []rune(hostname)
+	if len(runes) > maximumHostRunes {
+		runes = runes[:maximumHostRunes]
+	}
+	return string(runes) + suffix
 }
 
 func LoadCommand(lookup LookupEnv) (Command, error) {

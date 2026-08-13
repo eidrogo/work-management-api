@@ -21,30 +21,42 @@ func NewStore(db *sql.DB) (*Store, error) {
 }
 
 const notificationColumns = `
-id::text,
-work_item_id::text,
-assignment_event_id,
-recipient_email,
-recipient_name,
-event_type,
-payload,
-status,
-attempt_count,
-delivery_cycle,
-cycle_attempt_count,
-next_attempt_at,
-COALESCE(last_error_code,''),
-COALESCE(last_error,''),
-message_id,
-COALESCE(provider_message_id,''),
-COALESCE(locked_by,''),
-COALESCE(lease_token::text,''),
-locked_until,
-created_at,
-updated_at,
-last_attempt_at,
-sent_at,
-deduplication_key`
+notification_deliveries.id::text,
+notification_deliveries.work_item_id::text,
+notification_deliveries.assignment_event_id,
+notification_deliveries.recipient_email,
+notification_deliveries.recipient_name,
+notification_deliveries.event_type,
+notification_deliveries.payload,
+notification_deliveries.status,
+notification_deliveries.attempt_count,
+notification_deliveries.delivery_cycle,
+notification_deliveries.cycle_attempt_count,
+notification_deliveries.next_attempt_at,
+COALESCE(notification_deliveries.last_error_code,''),
+COALESCE(notification_deliveries.last_error,''),
+notification_deliveries.message_id,
+COALESCE(notification_deliveries.provider_message_id,''),
+COALESCE(notification_deliveries.locked_by,''),
+COALESCE(notification_deliveries.lease_token::text,''),
+notification_deliveries.locked_until,
+notification_deliveries.created_at,
+notification_deliveries.updated_at,
+notification_deliveries.last_attempt_at,
+notification_deliveries.sent_at,
+notification_deliveries.deduplication_key`
+
+const pendingClaimQuery = `SELECT ` + notificationColumns + `
+FROM notification_deliveries
+WHERE notification_deliveries.status='PENDING' AND notification_deliveries.next_attempt_at <= $1
+ORDER BY notification_deliveries.next_attempt_at, notification_deliveries.created_at, notification_deliveries.id
+FOR UPDATE SKIP LOCKED LIMIT 1`
+
+const expiredClaimQuery = `SELECT ` + notificationColumns + `
+FROM notification_deliveries
+WHERE notification_deliveries.status='PROCESSING' AND notification_deliveries.locked_until <= $1
+ORDER BY notification_deliveries.locked_until, notification_deliveries.created_at, notification_deliveries.id
+FOR UPDATE SKIP LOCKED LIMIT 1`
 
 type ClaimRequest struct {
 	WorkerID      string
@@ -62,10 +74,11 @@ type Completion struct {
 }
 
 func (store *Store) ClaimNext(ctx context.Context, request ClaimRequest) (Delivery, bool, error) {
-	request.WorkerID = strings.TrimSpace(request.WorkerID)
-	if request.WorkerID == "" || request.LeaseDuration <= 0 || request.MaxAttempts < 1 {
+	workerID, workerIDErr := ValidateWorkerID(request.WorkerID)
+	if workerIDErr != nil || request.LeaseDuration <= 0 || request.MaxAttempts < 1 {
 		return Delivery{}, false, fmt.Errorf("%w: invalid claim request", ErrInvalidInput)
 	}
+	request.WorkerID = workerID
 	leaseMicros := request.LeaseDuration.Microseconds()
 	if leaseMicros < 1 {
 		return Delivery{}, false, fmt.Errorf("%w: invalid claim request", ErrInvalidInput)
@@ -75,29 +88,27 @@ func (store *Store) ClaimNext(ctx context.Context, request ClaimRequest) (Delive
 		if err != nil {
 			return Delivery{}, false, err
 		}
-		candidate, err := scanDelivery(tx.QueryRowContext(ctx, `SELECT `+notificationColumns+`
-FROM notification_deliveries
-WHERE (status='PENDING' AND next_attempt_at <= clock_timestamp())
-   OR (status='PROCESSING' AND locked_until <= clock_timestamp())
-ORDER BY CASE WHEN status='PENDING' THEN next_attempt_at ELSE locked_until END,
-         created_at,
-         id
-FOR UPDATE SKIP LOCKED
-LIMIT 1`))
-		if errors.Is(err, sql.ErrNoRows) {
-			_ = tx.Rollback()
-			return Delivery{}, false, nil
-		}
-		if err != nil {
-			_ = tx.Rollback()
-			return Delivery{}, false, err
-		}
 		var dbNow time.Time
 		if err = tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
 			_ = tx.Rollback()
 			return Delivery{}, false, err
 		}
 		dbNow = dbNow.UTC()
+		pending, pendingFound, err := claimCandidate(ctx, tx, pendingClaimQuery, dbNow)
+		if err != nil {
+			_ = tx.Rollback()
+			return Delivery{}, false, err
+		}
+		expired, expiredFound, err := claimCandidate(ctx, tx, expiredClaimQuery, dbNow)
+		if err != nil {
+			_ = tx.Rollback()
+			return Delivery{}, false, err
+		}
+		candidate, found := earlierClaimCandidate(pending, pendingFound, expired, expiredFound)
+		if !found {
+			_ = tx.Rollback()
+			return Delivery{}, false, nil
+		}
 		if candidate.Status == StatusProcessing && candidate.AttemptCount > 0 {
 			started := candidate.CreatedAt
 			if candidate.LastAttemptAt != nil {
@@ -133,6 +144,37 @@ WHERE id=$4 RETURNING `+notificationColumns, request.WorkerID, dbNow, leaseMicro
 		}
 		return updated, true, nil
 	}
+}
+
+func claimCandidate(ctx context.Context, tx *sql.Tx, query string, dbNow time.Time) (Delivery, bool, error) {
+	delivery, err := scanDelivery(tx.QueryRowContext(ctx, query, dbNow))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Delivery{}, false, nil
+	}
+	return delivery, err == nil, err
+}
+
+func earlierClaimCandidate(pending Delivery, pendingFound bool, expired Delivery, expiredFound bool) (Delivery, bool) {
+	switch {
+	case !pendingFound:
+		return expired, expiredFound
+	case !expiredFound:
+		return pending, true
+	case expired.LockedUntil != nil && pending.NextAttemptAt != nil && claimCandidateLess(*expired.LockedUntil, expired, *pending.NextAttemptAt, pending):
+		return expired, true
+	default:
+		return pending, true
+	}
+}
+
+func claimCandidateLess(leftEligible time.Time, left Delivery, rightEligible time.Time, right Delivery) bool {
+	if !leftEligible.Equal(rightEligible) {
+		return leftEligible.Before(rightEligible)
+	}
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
+	return left.ID < right.ID
 }
 
 func (store *Store) Complete(ctx context.Context, completion Completion) error {
@@ -219,32 +261,10 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, completion.DeliveryID, completion.AttemptNumbe
 }
 
 func (store *Store) List(ctx context.Context, input ListInput) (Page, error) {
-	var conditions []string
-	var args []any
-	add := func(template string, value any) {
-		args = append(args, value)
-		conditions = append(conditions, fmt.Sprintf(template, len(args)))
+	query, args, err := notificationListQuery(input)
+	if err != nil {
+		return Page{}, err
 	}
-	if input.Status != "" {
-		add("status=$%d", string(input.Status))
-	}
-	if input.WorkItemID != "" {
-		add("work_item_id=$%d", input.WorkItemID)
-	}
-	if input.Cursor != "" {
-		cursor, err := DecodeListCursor(input.Cursor)
-		if err != nil {
-			return Page{}, err
-		}
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		conditions = append(conditions, fmt.Sprintf("(created_at,id)<($%d,$%d)", len(args)-1, len(args)))
-	}
-	query := "SELECT " + notificationColumns + " FROM notification_deliveries"
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-	args = append(args, input.Limit+1)
-	query += fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT $%d", len(args))
 	rows, err := store.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return Page{}, err
@@ -268,6 +288,36 @@ func (store *Store) List(ctx context.Context, input ListInput) (Page, error) {
 		}
 	}
 	return page, rows.Err()
+}
+
+func notificationListQuery(input ListInput) (string, []any, error) {
+	var conditions []string
+	var args []any
+	add := func(template string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(template, len(args)))
+	}
+	if input.Status != "" {
+		add("notification_deliveries.status=$%d", string(input.Status))
+	}
+	if input.WorkItemID != "" {
+		add("notification_deliveries.work_item_id=$%d", input.WorkItemID)
+	}
+	if input.Cursor != "" {
+		cursor, err := DecodeListCursor(input.Cursor)
+		if err != nil {
+			return "", nil, err
+		}
+		args = append(args, cursor.CreatedAt, cursor.ID)
+		conditions = append(conditions, fmt.Sprintf("(notification_deliveries.created_at,notification_deliveries.id)<($%d,$%d)", len(args)-1, len(args)))
+	}
+	query := "SELECT " + notificationColumns + " FROM notification_deliveries"
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	args = append(args, input.Limit+1)
+	query += fmt.Sprintf(" ORDER BY notification_deliveries.created_at DESC,notification_deliveries.id DESC LIMIT $%d", len(args))
+	return query, args, nil
 }
 
 func (store *Store) Get(ctx context.Context, notificationID string) (Delivery, error) {

@@ -245,6 +245,41 @@ func TestSMTPClientTimeoutIsBoundedAndRetryable(t *testing.T) {
 	}
 }
 
+func TestSMTPClientCancellationInterruptsBlockedTransaction(t *testing.T) {
+	server := newSMTPServer(t)
+	server.dataAccepted = make(chan struct{})
+	server.releaseDataResponse = make(chan struct{})
+	defer server.Close()
+	host, port := server.Address(t)
+	client, err := NewSMTP(Config{Host: host, Port: port, From: "work@example.test", TLSMode: TLSPlain, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- client.Send(ctx, notifications.Message{To: "alice@example.test", Subject: "Cancel blocked SMTP", TextBody: "body", MessageID: "<notification-cancel@example.test>"})
+	}()
+	select {
+	case <-server.dataAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("SMTP transaction did not reach post-DATA response")
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err = <-result:
+		if err == nil || !notifications.IsRetryable(err) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("context cancellation did not interrupt the SMTP transaction")
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("cancellation elapsed=%s", elapsed)
+	}
+}
+
 func TestSMTPClientRejectsHeaderInjectionBeforeDial(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -278,11 +313,13 @@ func TestSMTPClientRejectsHeaderInjectionBeforeDial(t *testing.T) {
 }
 
 type smtpServer struct {
-	listener     net.Listener
-	mu           sync.Mutex
-	message      string
-	rcptResponse string
-	done         chan struct{}
+	listener            net.Listener
+	mu                  sync.Mutex
+	message             string
+	rcptResponse        string
+	dataAccepted        chan struct{}
+	releaseDataResponse chan struct{}
+	done                chan struct{}
 }
 
 func newSMTPServer(t *testing.T) *smtpServer {
@@ -343,6 +380,12 @@ func (server *smtpServer) serve() {
 			server.mu.Lock()
 			server.message = strings.Join(lines, "")
 			server.mu.Unlock()
+			if server.dataAccepted != nil {
+				close(server.dataAccepted)
+			}
+			if server.releaseDataResponse != nil {
+				<-server.releaseDataResponse
+			}
 			write("250 accepted\r\n")
 		case command == "QUIT":
 			write("221 bye\r\n")
@@ -368,6 +411,13 @@ func (server *smtpServer) Message(t *testing.T) string {
 }
 func (server *smtpServer) Close() {
 	_ = server.listener.Close()
+	if server.releaseDataResponse != nil {
+		select {
+		case <-server.releaseDataResponse:
+		default:
+			close(server.releaseDataResponse)
+		}
+	}
 	select {
 	case <-server.done:
 	case <-time.After(time.Second):

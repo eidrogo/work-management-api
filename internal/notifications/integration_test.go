@@ -47,6 +47,53 @@ func TestClaimNextClaimsExactlyOneAndUsesDatabaseTime(t *testing.T) {
 	}
 }
 
+func TestClaimNextRejectsInvalidWorkerIDBeforeSQLMutation(t *testing.T) {
+	db := postgrestest.Open(t)
+	ids := insertDueDeliveries(t, db, 1)
+	store, _ := NewStore(db)
+	for _, workerID := range []string{strings.Repeat("a", 256), "worker\nid", string([]byte{'w', 0xff})} {
+		if _, found, err := store.ClaimNext(context.Background(), ClaimRequest{WorkerID: workerID, LeaseDuration: testLease, MaxAttempts: 3}); !errors.Is(err, ErrInvalidInput) || found {
+			t.Fatalf("worker ID %q found=%v error=%v", workerID, found, err)
+		}
+	}
+	got, err := store.Get(context.Background(), ids[0])
+	if err != nil || got.Status != StatusPending || got.AttemptCount != 0 || got.LockedBy != "" || got.LeaseToken != "" {
+		t.Fatalf("delivery=%#v error=%v", got, err)
+	}
+}
+
+func TestClaimNextSelectsEarliestEligibilityAcrossPendingAndExpired(t *testing.T) {
+	db := postgrestest.Open(t)
+	ids := insertDueDeliveries(t, db, 2)
+	now := databaseNow(t, db)
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET next_attempt_at=$1 WHERE id=$2`, now.Add(-time.Second), ids[0])
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET status='PROCESSING',next_attempt_at=NULL,attempt_count=1,cycle_attempt_count=1,
+locked_by='expired-worker',lease_token=gen_random_uuid(),locked_until=$1,last_attempt_at=$1 WHERE id=$2`, now.Add(-2*time.Second), ids[1])
+	store, _ := NewStore(db)
+	delivery, found, err := store.ClaimNext(context.Background(), ClaimRequest{WorkerID: "worker-next", LeaseDuration: testLease, MaxAttempts: 3})
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if delivery.ID != ids[1] || delivery.AttemptCount != 2 {
+		t.Fatalf("delivery=%#v want=%s", delivery, ids[1])
+	}
+	if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_attempts WHERE notification_id=$1 AND outcome='ABANDONED'`, ids[1]); got != 1 {
+		t.Fatalf("abandoned attempts=%d", got)
+	}
+}
+
+func TestEarlierClaimCandidateUsesCreatedAtAndIDForEqualEligibility(t *testing.T) {
+	t.Parallel()
+	due := time.Date(2026, 8, 13, 4, 0, 0, 0, time.UTC)
+	created := due.Add(-time.Hour)
+	pending := Delivery{ID: "22222222-2222-4222-8222-222222222222", NextAttemptAt: &due, CreatedAt: created}
+	expired := Delivery{ID: "11111111-1111-4111-8111-111111111111", LockedUntil: &due, CreatedAt: created}
+	got, found := earlierClaimCandidate(pending, true, expired, true)
+	if !found || got.ID != expired.ID {
+		t.Fatalf("delivery=%#v found=%v", got, found)
+	}
+}
+
 func TestConcurrentClaimNextHasSingleWinner(t *testing.T) {
 	db := postgrestest.Open(t)
 	insertDueDeliveries(t, db, 1)
@@ -274,6 +321,90 @@ func TestSlowWorkerDoesNotReserveSecondWorkersDelivery(t *testing.T) {
 	}
 }
 
+func TestWorkerDrainPersistsActiveCompletionBeforeReturning(t *testing.T) {
+	db := postgrestest.Open(t)
+	ids := insertDueDeliveries(t, db, 1)
+	store, _ := NewStore(db)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	worker := newIntegrationWorker(t, store, &blockingSender{entered: entered, release: release}, "worker-drain", 1, 3)
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	defer cancelAttempt()
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin send")
+	}
+	stopClaims()
+	close(release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker drain did not return")
+	}
+	got, err := store.Get(context.Background(), ids[0])
+	if err != nil || got.Status != StatusSent || len(got.Attempts) != 1 || got.Attempts[0].Outcome != OutcomeSent {
+		t.Fatalf("delivery=%#v error=%v", got, err)
+	}
+}
+
+func TestWorkerForcedDrainIsBoundedAndLeaseRecovers(t *testing.T) {
+	db := postgrestest.Open(t)
+	ids := insertDueDeliveries(t, db, 1)
+	store, _ := NewStore(db)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	worker, err := NewWorker(store, &blockingSender{entered: entered, release: release}, slog.New(slog.NewTextHandler(io.Discard, nil)), WorkerConfig{
+		WorkerID: "worker-forced-drain", BatchSize: 1, LeaseDuration: 80 * time.Millisecond, MaxAttempts: 3,
+		BackoffBase: 100 * time.Millisecond, BackoffMax: time.Second, PollInterval: time.Second, Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimCtx, stopClaims := context.WithCancel(context.Background())
+	attemptCtx, cancelAttempt := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- worker.RunUntilStopped(claimCtx, attemptCtx) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not begin send")
+	}
+	stopClaims()
+	started := time.Now()
+	cancelAttempt()
+	select {
+	case err = <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("forced cancellation was not bounded")
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("forced cancellation elapsed=%s", elapsed)
+	}
+	got, err := store.Get(context.Background(), ids[0])
+	if err != nil || got.Status != StatusProcessing || len(got.Attempts) != 0 {
+		t.Fatalf("delivery before recovery=%#v error=%v", got, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	recovered, found, err := store.ClaimNext(context.Background(), ClaimRequest{WorkerID: "worker-recovery", LeaseDuration: testLease, MaxAttempts: 3})
+	if err != nil || !found || recovered.ID != ids[0] || recovered.AttemptCount != 2 {
+		t.Fatalf("recovered=%#v found=%v error=%v", recovered, found, err)
+	}
+	got, err = store.Get(context.Background(), ids[0])
+	if err != nil || len(got.Attempts) != 1 || got.Attempts[0].Outcome != OutcomeAbandoned {
+		t.Fatalf("delivery after recovery=%#v error=%v", got, err)
+	}
+}
+
 func TestWorkerRetryAndExhaustionUseSafeCodes(t *testing.T) {
 	sentinel := errors.New("provider-secret user@example.test")
 	tests := []struct {
@@ -447,7 +578,7 @@ func insertFailedDelivery(t *testing.T, db *sql.DB, cycle int) (*Store, string) 
 
 func TestUnfilteredNotificationKeysetPagination(t *testing.T) {
 	db := postgrestest.Open(t)
-	ids := insertDueDeliveries(t, db, 5)
+	ids := insertDueDeliveries(t, db, 25)
 	tied := databaseNow(t, db)
 	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET created_at=$1`, tied)
 	store, _ := NewStore(db)
@@ -486,36 +617,92 @@ func TestUnfilteredNotificationKeysetPagination(t *testing.T) {
 	}
 }
 
-func TestKeysetQueriesUseCoveringIndexes(t *testing.T) {
+func TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps(t *testing.T) {
 	db := postgrestest.Open(t)
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
+	ids := insertDueDeliveries(t, db, 25)
+	tied := databaseNow(t, db)
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET created_at=$1`, tied)
+	store, _ := NewStore(db)
+	for name, input := range map[string]ListInput{
+		"status":    {Status: StatusPending, Limit: 3},
+		"work item": {WorkItemID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Limit: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := collectNotificationPages(t, store, input)
+			assertSameNotificationIDs(t, got, ids)
+		})
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(context.Background(), `SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off`); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := tx.QueryContext(context.Background(), `EXPLAIN (COSTS OFF) SELECT `+notificationColumns+`
-FROM notification_deliveries ORDER BY created_at DESC,id DESC LIMIT 20`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rows.Close() }()
-	var plan strings.Builder
-	for rows.Next() {
-		var line string
-		if err = rows.Scan(&line); err != nil {
+}
+
+func collectNotificationPages(t *testing.T, store *Store, input ListInput) []string {
+	t.Helper()
+	var got []string
+	for {
+		page, err := store.List(context.Background(), input)
+		if err != nil {
 			t.Fatal(err)
 		}
-		plan.WriteString(line)
-		plan.WriteByte('\n')
+		for _, delivery := range page.Items {
+			got = append(got, delivery.ID)
+		}
+		if page.NextCursor == "" {
+			return got
+		}
+		if page.NextCursor == input.Cursor {
+			t.Fatalf("cursor did not advance: %q", input.Cursor)
+		}
+		input.Cursor = page.NextCursor
 	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
+}
+
+func assertSameNotificationIDs(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("ids=%v", got)
 	}
-	if !strings.Contains(plan.String(), "notification_deliveries_page_idx") {
-		t.Fatalf("plan=%s", plan.String())
+	seen := make(map[string]bool, len(got))
+	for _, deliveryID := range got {
+		if seen[deliveryID] {
+			t.Fatalf("duplicate=%s", deliveryID)
+		}
+		seen[deliveryID] = true
+	}
+	for _, deliveryID := range want {
+		if !seen[deliveryID] {
+			t.Fatalf("missing=%s ids=%v", deliveryID, got)
+		}
+	}
+}
+
+func TestClaimCandidatePlansUseBoundedPartialIndexes(t *testing.T) {
+	db := postgrestest.Open(t)
+	insertLargeMixedNotificationBacklog(t, db, 12000)
+	now := databaseNow(t, db)
+	assertJSONPlanUsesIndexWithoutScanOrSort(t, db, pendingClaimQuery, []any{now}, "notification_deliveries_claim_idx")
+	assertJSONPlanUsesIndexWithoutScanOrSort(t, db, expiredClaimQuery, []any{now}, "notification_deliveries_expired_lease_idx")
+}
+
+func TestNotificationListPlansUseMatchingIndexesWithoutSorts(t *testing.T) {
+	db := postgrestest.Open(t)
+	insertLargeTiedNotificationBacklog(t, db, 12000)
+	tied := databaseNow(t, db)
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET created_at=$1`, tied)
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries SET status='SENT',next_attempt_at=NULL,sent_at=clock_timestamp()
+WHERE (get_byte(uuid_send(id),15) % 3)=0`)
+	postgrestest.MustExec(t, db, `ANALYZE notification_deliveries`)
+	for _, test := range []struct {
+		input ListInput
+		index string
+	}{
+		{input: ListInput{Limit: 20}, index: "notification_deliveries_page_idx"},
+		{input: ListInput{Status: StatusSent, Limit: 20}, index: "notification_deliveries_status_page_idx"},
+		{input: ListInput{WorkItemID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Limit: 20}, index: "notification_deliveries_work_item_idx"},
+	} {
+		query, args, err := notificationListQuery(test.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertJSONPlanUsesIndexWithoutScanOrSort(t, db, query, args, test.index)
 	}
 }
 
@@ -549,6 +736,79 @@ VALUES($1,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',$2,'alice@example.test','Alice'
 		ids = append(ids, deliveryID)
 	}
 	return ids
+}
+
+func insertLargeMixedNotificationBacklog(t *testing.T, db *sql.DB, count int) {
+	t.Helper()
+	insertLargeTiedNotificationBacklog(t, db, count/2)
+	insertLargeTiedNotificationBacklogForWorkItem(t, db, count/2, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "mixed")
+	postgrestest.MustExec(t, db, `UPDATE notification_deliveries
+SET status='PROCESSING',next_attempt_at=NULL,attempt_count=1,cycle_attempt_count=1,
+locked_by='expired-fixture',lease_token=gen_random_uuid(),locked_until=clock_timestamp()-interval '1 second',last_attempt_at=clock_timestamp()-interval '2 seconds'
+WHERE work_item_id='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'`)
+	postgrestest.MustExec(t, db, `ANALYZE notification_deliveries`)
+}
+
+func insertLargeTiedNotificationBacklog(t *testing.T, db *sql.DB, count int) {
+	t.Helper()
+	now := databaseNow(t, db)
+	if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	targetCount := count / 12
+	insertLargeTiedNotificationBacklogForWorkItem(t, db, targetCount, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "page-a")
+	insertLargeTiedNotificationBacklogForWorkItem(t, db, count-targetCount, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "page-b")
+	postgrestest.MustExec(t, db, `ANALYZE notification_deliveries`)
+}
+
+func insertLargeTiedNotificationBacklogForWorkItem(t *testing.T, db *sql.DB, count int, workItemID, fixture string) {
+	t.Helper()
+	postgrestest.MustExec(t, db, `WITH source AS (
+SELECT generate_series(1,$1)::bigint AS n
+), events AS (
+INSERT INTO work_item_events(public_id,work_item_id,actor_id,event_type,from_status,to_status,new_assignee_id,occurred_at)
+SELECT md5($4||'-event-'||n::text)::uuid,$5,$2,
+'WORK_ITEM_ASSIGNED','UNASSIGNED','ASSIGNED',$3,clock_timestamp() FROM source RETURNING id,public_id
+)
+INSERT INTO notification_deliveries(
+id,work_item_id,assignment_event_id,recipient_email,recipient_name,event_type,payload,status,attempt_count,delivery_cycle,cycle_attempt_count,next_attempt_at,message_id,created_at,updated_at,deduplication_key)
+SELECT md5($4||'-delivery-'||events.public_id::text)::uuid,$5,events.id,
+'alice@example.test','Alice','WORK_ITEM_ASSIGNED_EMAIL','{"work_item_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","work_item_title":"Task","assignee_name":"Alice","assigned_by_name":"Maya","assigned_at":"2026-08-12T12:00:00Z"}'::jsonb,
+'PENDING',0,1,0,clock_timestamp()-interval '1 second','<'||events.public_id::text||'@example.test>',clock_timestamp(),clock_timestamp(),'plan:'||events.public_id::text
+FROM events`, count, seed.ManagerID, seed.WorkerAliceID, fixture, workItemID)
+}
+
+func assertJSONPlanUsesIndexWithoutScanOrSort(t *testing.T, db *sql.DB, query string, args []any, expectedIndex string) {
+	t.Helper()
+	var raw []byte
+	if err := db.QueryRowContext(context.Background(), `EXPLAIN (FORMAT JSON, COSTS OFF) `+query, args...).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var root []map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatalf("decode plan: %v plan=%s", err, raw)
+	}
+	foundIndex := false
+	var visit func(map[string]any)
+	visit = func(node map[string]any) {
+		nodeType, _ := node["Node Type"].(string)
+		switch nodeType {
+		case "Seq Scan", "Sort", "Incremental Sort":
+			t.Fatalf("forbidden %s in plan=%s", nodeType, raw)
+		}
+		if indexName, _ := node["Index Name"].(string); indexName == expectedIndex {
+			foundIndex = true
+		}
+		if children, ok := node["Plans"].([]any); ok {
+			for _, child := range children {
+				visit(child.(map[string]any))
+			}
+		}
+	}
+	visit(root[0]["Plan"].(map[string]any))
+	if !foundIndex {
+		t.Fatalf("missing index %s in plan=%s", expectedIndex, raw)
+	}
 }
 
 func databaseNow(t *testing.T, db *sql.DB) time.Time {

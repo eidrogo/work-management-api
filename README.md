@@ -250,7 +250,7 @@ Database checks reinforce state/assignee consistency, lease consistency, termina
 
 Work-item pages are ordered by `(created_at DESC, id DESC)`. History is ordered by event sequence ascending. Notification pages use `(created_at DESC, id DESC)`. Cursors are opaque base64url-encoded boundaries.
 
-Covered indexes let the database seek to a cursor in approximately `O(log N)` and read `O(page_size)` rows instead of scanning/skipping every prior row. The maximum page size is 100.
+Default-planner regression tests populate large tied-timestamp sets and require the matching unfiltered, status-filtered, and work-item-filtered indexes without sequential scans or sort nodes. The maximum page size is 100.
 
 Cursors provide stable normal forward traversal; they do not promise a frozen snapshot across an arbitrarily long browsing session.
 
@@ -264,12 +264,14 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 6. Insert a unique `PENDING` delivery with a stable message ID.
 7. Commit.
 8. Return the updated item and ETag.
-9. A worker claims exactly one due row immediately before sending it. PostgreSQL time controls eligibility and a fresh database UUID fences the expiring lease.
+9. A worker fetches PostgreSQL time once, locks at most the first eligible `PENDING` and expired `PROCESSING` row through their ordered partial indexes, chooses the earlier eligibility boundary, and claims exactly that row before sending. A fresh database UUID fences the expiring lease.
 10. The same real SMTP adapter connects to Mailpit locally or a configured provider.
 11. On server acceptance, atomically and conditionally mark `SENT` and append a `SENT` attempt only while the owner/token/attempt lease fence remains current and unexpired.
 12. On retryable failure, append `RETRY_SCHEDULED`, clear the lease fence, and set a bounded jittered retry delay from database time.
 13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
+
+Work-item titles are single-line values of at most 200 Unicode code points. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding so the generated header line stays within the SMTP line limit. The SMTP adapter independently rejects header newlines before dialing.
 
 ## 13. Delivery guarantees and limitations
 
@@ -278,6 +280,7 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 - **Worker concurrency:** multiple workers cannot claim the same row at the same time under normal PostgreSQL semantics; a worker never reserves later rows while sending its current row.
 - **Completion fencing:** stale owners, tokens, attempts, and expired leases cannot complete a delivery.
 - **Clock source:** PostgreSQL controls every persisted queue eligibility, lease, retry, completion, abandonment, and replay timestamp.
+- **Graceful worker shutdown:** a signal stops new claims immediately, shuts down the admin listener concurrently, and gives the active SMTP attempt plus fenced database completion the configured `SHUTDOWN_TIMEOUT`. Expiry force-cancels the attempt, closes the admin listener, waits for both goroutines, and leaves any claimed row recoverable after its lease.
 - **Delivery semantics:** at least once.
 - **`SENT`:** the SMTP server accepted the completed message transaction.
 - **Not guaranteed:** inbox delivery, bounce-free delivery, opens, exactly once.
@@ -579,7 +582,8 @@ The suite protects:
 - immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, concurrency conflicts, and keyset traversal;
 - database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
 - one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;
-- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, and header-injection behavior;
+- bounded partial-index claim plans, default-planner notification page plans, tied-page traversal, graceful drain/forced recovery, and shared persisted worker-ID validation;
+- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, header-line bounds, and header-injection behavior;
 - public/admin listener isolation, bounded metric labels, and last-good backlog caching;
 - the exact public OpenAPI method/path, security, response-status, schema, and response-header contract;
 - a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
@@ -596,6 +600,8 @@ Commands and exact observed outcomes are recorded in [`docs/assessment/verificat
 - Request ID in API responses and error bodies
 - Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
+
+`WORKER_ID` must be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.
 
 Detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures are in [`docs/operations.md`](docs/operations.md).
 

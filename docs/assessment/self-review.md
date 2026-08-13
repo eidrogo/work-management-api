@@ -6,7 +6,7 @@
 - Repository branch: `codex/submission-hardening`.
 - Task 4 base: `8827e53bff9e5e52058d0fd7b1f0af1b777b6ab6`.
 - Preserved hardening ancestry: Task 1 baseline `ed59c2c`, Task 2 `cf97716`, Task 3/base `8827e53`.
-- Review scope: the Task 4 candidate tree and its focused independent-review fixes atop that base. A final hash is intentionally not embedded in a file that contributes to the hash.
+- Review scope: the complete submission tree, including final whole-branch reliability fixes atop the Task 4 base. A final hash is intentionally not embedded in a file that contributes to the hash.
 
 ## 2. Requirement traceability
 
@@ -29,11 +29,11 @@ The implemented lifecycle is closed to `UNASSIGNED -> ASSIGNED -> IN_PROGRESS ->
 
 ## 4. Transactions, concurrency, and idempotency
 
-Assignment update, event append, and initial delivery insert share one transaction and have a forced rollback test. Expected versions make conflicting assignments/transitions explicit. Create idempotency stores an immutable first-response snapshot, so a replay does not silently change after later mutations. Same-assignee and same-target transition retries are deterministic no-ops with replay metadata/headers. Notification claims select one row immediately before send; PostgreSQL time, owner, fresh UUID token, attempt, and unexpired lease jointly fence completion. Concurrent claim, expiry, stale-completion, retry, and replay behavior are covered without duplicating Task 2 tests.
+Assignment update, event append, and initial delivery insert share one transaction and have a forced rollback test. Expected versions make conflicting assignments/transitions explicit. Create idempotency stores an immutable first-response snapshot, so a replay does not silently change after later mutations. Same-assignee and same-target transition retries are deterministic no-ops with replay metadata/headers. Notification claims fetch one PostgreSQL time, lock at most one candidate from each ordered partial index, and select one row immediately before send; owner, fresh UUID token, attempt, and unexpired lease jointly fence completion. Concurrent claim, cross-state order, expiry, stale-completion, retry, and replay behavior are covered. Signal lifecycle tests prove active completion within grace and bounded force-cancel/lease recovery while reaping worker and admin goroutines.
 
 ## 5. Notification, SMTP, replay, and privacy
 
-The worker uses the production SMTP adapter in the live stack. Tests exercise plain, verified STARTTLS (including the post-TLS EHLO), implicit TLS, real AUTH success, real 535 rejection, certificate rejection in both TLS modes, greeting timeout, and header-injection rejection before dialing. Persisted/client-visible failures are restricted to allowlisted codes and fixed generic messages. Provider, authentication, certificate, and credential text is not durable API data.
+The worker uses the production SMTP adapter in the live stack. Tests exercise plain, verified STARTTLS (including the post-TLS EHLO), implicit TLS, real AUTH success, real 535 rejection, certificate rejection in both TLS modes, greeting timeout, cancellation of a blocked post-DATA transaction, and header-injection rejection before dialing. Domain/HTTP tests reject CR/LF titles with zero persistence; accepted 200-rune worst-case Unicode titles keep their full body title while a bounded subject remains within the SMTP header-line limit. Persisted/client-visible failures are restricted to allowlisted codes and fixed generic messages. Provider, authentication, certificate, and credential text is not durable API data.
 
 `SENT` is deliberately defined as SMTP server acceptance after the completed message transaction. Generic SMTP retains an acceptance-before-database-update duplicate window and cannot prove inbox delivery. Mailpit proves local protocol acceptance and current message content only. HTTP replay attributes an authenticated manager and request ID; the database-access CLI actor is required but self-asserted. Replay is reasoned, append-only, atomic with state, and capped at cycle 10.
 
@@ -43,7 +43,7 @@ The public router exposes exactly 11 method/path pairs across ten `/v1` template
 
 ## 7. Schema, indexes, and migrations
 
-Migration tests apply into isolated schemas, validate checks/foreign keys/triggers, apply the local down migration, and reapply successfully. Direct SQL tests cover worker-assignee and role-change protection, immutable creator/completed rows, and append-only work-item/attempt histories. Existing Task 2 tests cover notification replay append-only state and outbox/idempotency constraints. Keyset traversal and `EXPLAIN` checks exercise the intended work-item and notification indexes rather than adding duplicate shallow assertions.
+Migration tests apply into isolated schemas, validate checks/foreign keys/triggers, apply the local down migration, and reapply successfully. Direct SQL tests cover worker-assignee and role-change protection, immutable creator/completed rows, and append-only work-item/attempt histories. Existing Task 2 tests cover notification replay append-only state and outbox/idempotency constraints. Large default-planner JSON `EXPLAIN` tests reject sequential scans and sort nodes, require both claim indexes, and require each unfiltered/status/work-item notification page index; tied traversal covers all page shapes.
 
 ## 8. Observability, operations, and security
 
@@ -79,9 +79,13 @@ Resolved during hardening:
 - undocumented trailing-slash item, notification, and action aliases could reach the application instead of returning the stable 404 contract;
 - required OpenAPI header keys could point to dangling references without failing the contract gate;
 - authentication hashing coverage compared the production helper to itself instead of pinning SHA-256 and the exact store boundary independently.
+- worker signals canceled active SMTP work instead of draining it; the lifecycle now stops claims separately, drains within the configured budget, force-cancels only at expiry, and reaps both components;
+- notification claims and page ordering defeated their intended indexes; bounded per-state claim selection and qualified list boundaries now have large default-planner plan regressions;
+- persisted titles could form invalid or overlong SMTP Subject headers; single-line validation, zero-side-effect HTTP evidence, bounded subject rendering, and SMTP defense in depth close the gap;
+- persisted worker IDs were not validated against their 255-character columns; one UTF-8/rune/control contract now gates startup, worker construction, and claim storage.
 
-Remaining in-scope findings: none identified after the final commands recorded in [`verification.md`](verification.md). The accepted debt above remains deliberate and prevents a production-readiness claim.
+No additional in-scope findings were identified during self-review; focused and clean-Compose candidate evidence is recorded in [`verification.md`](verification.md), and the required post-commit authority is captured in the external final fix report. The accepted debt above remains deliberate and prevents a production-readiness claim.
 
 ## 11. Verification evidence
 
-Only actually executed commands and exact observed results are recorded in [`docs/assessment/verification.md`](verification.md). Raw transient logs are intentionally outside the repository and are referenced by the Task 4 handoff report.
+Only actually executed commands and exact observed results are recorded in [`docs/assessment/verification.md`](verification.md). Raw transient logs are intentionally outside the repository and are referenced by the final fix report.
