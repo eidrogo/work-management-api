@@ -513,6 +513,39 @@ func TestReplayAtomicallyAppendsAudit(t *testing.T) {
 	}
 }
 
+func TestStoreReplayRejectsNULBeforeMutation(t *testing.T) {
+	db := postgrestest.Open(t)
+	store, deliveryID := insertFailedDelivery(t, db, 1)
+	_, err := store.Replay(context.Background(), ReplayRequest{
+		NotificationID: deliveryID,
+		ActorID:        "manager-nul",
+		RequestID:      "request-store-nul",
+		Channel:        ReplayChannelCLI,
+		Reason:         "  provider\x00 recovered  ",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error=%v", err)
+	}
+	unchanged, err := store.Get(context.Background(), deliveryID)
+	if err != nil || unchanged.Status != StatusFailed || unchanged.DeliveryCycle != 1 || len(unchanged.Replays) != 0 || len(unchanged.Attempts) != 1 {
+		t.Fatalf("delivery=%#v error=%v", unchanged, err)
+	}
+	replayed, err := store.Replay(context.Background(), ReplayRequest{
+		NotificationID: deliveryID,
+		ActorID:        "manager-nul",
+		RequestID:      "request-store-valid",
+		Channel:        ReplayChannelCLI,
+		Reason:         "Provider recovered",
+	})
+	if err != nil || replayed.Status != StatusPending || replayed.DeliveryCycle != 2 {
+		t.Fatalf("delivery=%#v error=%v", replayed, err)
+	}
+	got, err := store.Get(context.Background(), deliveryID)
+	if err != nil || len(got.Replays) != 1 || got.Replays[0].Reason != "Provider recovered" {
+		t.Fatalf("delivery=%#v error=%v", got, err)
+	}
+}
+
 func TestReplayAuditFailureRollsBackState(t *testing.T) {
 	db := postgrestest.Open(t)
 	store, deliveryID := insertFailedDelivery(t, db, 1)

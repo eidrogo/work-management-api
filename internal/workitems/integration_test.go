@@ -280,6 +280,119 @@ func TestServiceAuthorizationAndLifecycleMatrix(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsNULPersistedTextBeforeMutation(t *testing.T) {
+	t.Run("create fields", func(t *testing.T) {
+		db := postgrestest.Open(t)
+		now := databaseNowForWorkItems(t, db)
+		if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		service, err := NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager}
+		for _, test := range []struct {
+			name, field, key, title, description string
+		}{
+			{name: "title", field: "title", key: "service-nul-title", title: "Blocked\x00 title", description: "valid"},
+			{name: "description", field: "description", key: "service-nul-description", title: "Valid title", description: "Blocked\x00 description"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				beforeItems := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`)
+				beforeEvents := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`)
+				_, err := service.Create(context.Background(), manager, CreateInput{Title: test.title, Description: test.description, IdempotencyKey: test.key})
+				assertWorkItemInvalidField(t, err, test.field)
+				if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_items`); got != beforeItems {
+					t.Fatalf("work items=%d want=%d", got, beforeItems)
+				}
+				if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events`); got != beforeEvents {
+					t.Fatalf("events=%d want=%d", got, beforeEvents)
+				}
+				if got := postgrestest.Count(t, db, `SELECT count(*) FROM idempotency_keys WHERE idempotency_key=$1`, test.key); got != 0 {
+					t.Fatalf("idempotency rows=%d", got)
+				}
+				if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries`); got != 0 {
+					t.Fatalf("notifications=%d", got)
+				}
+				created, err := service.Create(context.Background(), manager, CreateInput{Title: "Valid after rejection", Description: "valid", IdempotencyKey: test.key})
+				if err != nil || created.Item.Version != 1 || created.Idempotent {
+					t.Fatalf("created=%#v error=%v", created, err)
+				}
+			})
+		}
+	})
+
+	t.Run("assignment reason", func(t *testing.T) {
+		db := postgrestest.Open(t)
+		now := databaseNowForWorkItems(t, db)
+		if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		service, err := NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager}
+		created, err := service.Create(context.Background(), manager, CreateInput{Title: "Service NUL assignment", IdempotencyKey: "service-nul-assignment"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.Assign(context.Background(), manager, created.Item.ID, AssignmentInput{AssigneeID: seed.WorkerAliceID, Reason: "Blocked\x00 reason", ExpectedVersion: 1})
+		assertWorkItemInvalidField(t, err, "reason")
+		unchanged, err := service.Get(context.Background(), manager, created.Item.ID)
+		if err != nil || unchanged.Version != 1 || unchanged.Status != StatusUnassigned || unchanged.AssigneeID != "" {
+			t.Fatalf("work item=%#v error=%v", unchanged, err)
+		}
+		if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events WHERE work_item_id=$1`, created.Item.ID); got != 1 {
+			t.Fatalf("events=%d", got)
+		}
+		if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries WHERE work_item_id=$1`, created.Item.ID); got != 0 {
+			t.Fatalf("notifications=%d", got)
+		}
+		assigned, err := service.Assign(context.Background(), manager, created.Item.ID, AssignmentInput{AssigneeID: seed.WorkerAliceID, Reason: "Valid after rejection", ExpectedVersion: 1})
+		if err != nil || assigned.Item.Version != 2 || assigned.Item.Status != StatusAssigned {
+			t.Fatalf("assigned=%#v error=%v", assigned, err)
+		}
+		if got := postgrestest.Count(t, db, `SELECT count(*) FROM work_item_events WHERE work_item_id=$1 AND event_type='WORK_ITEM_ASSIGNED'`, created.Item.ID); got != 1 {
+			t.Fatalf("assignment events=%d", got)
+		}
+		if got := postgrestest.Count(t, db, `SELECT count(*) FROM notification_deliveries WHERE work_item_id=$1`, created.Item.ID); got != 1 {
+			t.Fatalf("notifications=%d", got)
+		}
+	})
+}
+
+func TestServiceAuthorizationPrecedesNULValidation(t *testing.T) {
+	db := postgrestest.Open(t)
+	now := databaseNowForWorkItems(t, db)
+	if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := auth.Principal{ID: seed.WorkerAliceID, Role: auth.RoleWorker}
+	if _, err = service.Create(context.Background(), worker, CreateInput{Title: "Denied\x00 title", IdempotencyKey: "denied-nul-create"}); !errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("create error=%v", err)
+	}
+	if _, err = service.Assign(context.Background(), worker, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", AssignmentInput{AssigneeID: seed.WorkerAliceID, Reason: "Denied\x00 reason", ExpectedVersion: 1}); !errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("assignment error=%v", err)
+	}
+}
+
+func assertWorkItemInvalidField(t *testing.T, err error, field string) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error=%v", err)
+	}
+	code, _, details := ErrorContract(err)
+	if code != "INVALID_INPUT" || len(details) != 1 || details["field"] != field {
+		t.Fatalf("code=%q details=%v", code, details)
+	}
+}
+
 func TestListOwnForcesAuthenticatedWorker(t *testing.T) {
 	db := postgrestest.Open(t)
 	now := databaseNowForWorkItems(t, db)

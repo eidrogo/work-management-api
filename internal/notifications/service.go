@@ -8,6 +8,7 @@ import (
 
 	"github.com/eidrogo/work-management-api/internal/auth"
 	"github.com/eidrogo/work-management-api/internal/platform/id"
+	"github.com/eidrogo/work-management-api/internal/platform/persistedtext"
 	"github.com/eidrogo/work-management-api/internal/workitems"
 )
 
@@ -100,6 +101,9 @@ func validateReplayRequest(request ReplayRequest) (ReplayRequest, error) {
 	}
 	if request.Reason == "" || utf8.RuneCountInString(request.Reason) > 1000 {
 		return ReplayRequest{}, fmt.Errorf("%w: replay reason must contain between 1 and 1000 characters", ErrInvalidInput)
+	}
+	if err := persistedtext.Validate(request.Reason); err != nil {
+		return ReplayRequest{}, newInvalidInput("Reason contains an unsupported character.", map[string]any{"field": "reason"})
 	}
 	return request, nil
 }

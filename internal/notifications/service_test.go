@@ -51,9 +51,55 @@ func TestReplayRequiresReasonAndAttributesHTTPActor(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsNULAfterAuthorizationWithoutCallingRepository(t *testing.T) {
+	t.Parallel()
+	repository := &capturingRepository{}
+	service, err := NewService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notificationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	manager := auth.Principal{ID: "manager-identity", Role: auth.RoleManager}
+	_, err = service.Replay(context.Background(), manager, notificationID, ReplayInput{Reason: "  provider\x00 recovered  ", RequestID: "request-http-nul"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("manager error=%v", err)
+	}
+	if repository.replayCalls != 0 {
+		t.Fatalf("repository calls=%d", repository.replayCalls)
+	}
+
+	worker := auth.Principal{ID: "worker-identity", Role: auth.RoleWorker}
+	_, err = service.Replay(context.Background(), worker, notificationID, ReplayInput{Reason: "provider\x00 recovered", RequestID: "request-http-worker"})
+	if !errors.Is(err, workitems.ErrPermissionDenied) || errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("worker error=%v", err)
+	}
+	if repository.replayCalls != 0 {
+		t.Fatalf("repository calls=%d", repository.replayCalls)
+	}
+}
+
+func TestReplayAcceptsMaximumReasonAndOtherControls(t *testing.T) {
+	t.Parallel()
+	repository := &capturingRepository{replayResult: Delivery{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", DeliveryCycle: 2}}
+	service, err := NewService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := auth.Principal{ID: "manager-identity", Role: auth.RoleManager}
+	notificationID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	reason := strings.Repeat("界", 998) + "\t界"
+	if _, err = service.Replay(context.Background(), manager, notificationID, ReplayInput{Reason: reason, RequestID: "request-http-boundary"}); err != nil {
+		t.Fatal(err)
+	}
+	if repository.captured.Reason != reason {
+		t.Fatalf("reason length=%d", len([]rune(repository.captured.Reason)))
+	}
+}
+
 type capturingRepository struct {
 	captured     ReplayRequest
 	replayResult Delivery
+	replayCalls  int
 }
 
 func (*capturingRepository) List(context.Context, ListInput) (Page, error) {
@@ -63,6 +109,7 @@ func (*capturingRepository) Get(context.Context, string) (Delivery, error) {
 	return Delivery{}, nil
 }
 func (repository *capturingRepository) Replay(_ context.Context, request ReplayRequest) (Delivery, error) {
+	repository.replayCalls++
 	repository.captured = request
 	return repository.replayResult, nil
 }

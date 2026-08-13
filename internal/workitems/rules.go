@@ -7,6 +7,7 @@ import (
 
 	"github.com/eidrogo/work-management-api/internal/auth"
 	"github.com/eidrogo/work-management-api/internal/platform/id"
+	"github.com/eidrogo/work-management-api/internal/platform/persistedtext"
 )
 
 func AuthorizeCreate(actor auth.Principal) error {
@@ -53,8 +54,14 @@ func ValidateCreateInput(input CreateInput) (CreateInput, error) {
 	if input.Title == "" || utf8.RuneCountInString(input.Title) > 200 {
 		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Title must contain between 1 and 200 characters.", map[string]any{"field": "title", "maximum": 200})
 	}
+	if err := persistedtext.Validate(input.Title); err != nil {
+		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Title contains an unsupported character.", map[string]any{"field": "title"})
+	}
 	if utf8.RuneCountInString(input.Description) > 5000 {
 		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Description must not exceed 5000 characters.", map[string]any{"field": "description", "maximum": 5000})
+	}
+	if err := persistedtext.Validate(input.Description); err != nil {
+		return CreateInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Description contains an unsupported character.", map[string]any{"field": "description"})
 	}
 	return input, nil
 }
@@ -67,6 +74,9 @@ func ValidateAssignmentInput(input AssignmentInput) (AssignmentInput, error) {
 	}
 	if utf8.RuneCountInString(input.Reason) > 1000 {
 		return AssignmentInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "reason must not exceed 1000 characters.", map[string]any{"field": "reason", "maximum": 1000})
+	}
+	if err := persistedtext.Validate(input.Reason); err != nil {
+		return AssignmentInput{}, newError(ErrInvalidInput, "INVALID_INPUT", "Reason contains an unsupported character.", map[string]any{"field": "reason"})
 	}
 	return input, nil
 }

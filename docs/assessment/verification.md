@@ -635,3 +635,44 @@ PASS: focused SMTP/config and notification suites under race; both concurrency t
 ```
 
 The SMTP server in these tests is local and proves protocol acceptance only, not external inbox delivery. The reader gate is a test-only pgx query tracer on a dedicated database pool; production `Store.Get`, `Complete`, and `Replay` execute unchanged SQL paths without a production test hook or timing sleep.
+
+## FAIL then PASS — PostgreSQL-incompatible U+0000 input
+
+Focused commands:
+
+```bash
+go test ./internal/workitems ./internal/notifications ./internal/contract \
+  -run 'Test(PersistedText|ReplayRejectsNUL|ReplayAcceptsMaximum)' -count=1 -v
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test ./internal/httpapi ./internal/workitems ./internal/notifications \
+  -run 'Test(HTTPRejectsNULPersistedTextWithoutSideEffects|NULValidationPreservesAuthorizationPrecedence|ServiceRejectsNULPersistedTextBeforeMutation|ServiceAuthorizationPrecedesNULValidation|StoreReplayRejectsNULBeforeMutation)$' \
+  -count=1 -v
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test ./... -count=1
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -race ./... -count=1
+```
+
+RED evidence:
+
+```text
+title, description, and assignment-reason domain validation returned nil
+notification replay validation called the repository with a U+0000 reason
+OpenAPI retained the prior newline-only title pattern and no U+0000 constraints on the other three fields
+all four live HTTP mutations returned 500 INTERNAL_ERROR after SQLSTATE 22021
+direct work-item service and notification-store calls reached the same PostgreSQL error
+```
+
+GREEN evidence:
+
+```text
+PASS: title, description, assignment reason, and replay reason reject U+0000 after existing trimming
+PASS: maximum 200/5,000/1,000-rune boundaries and previously accepted non-NUL controls remain accepted
+PASS: all four OpenAPI properties carry their exact U+0000-excluding patterns
+PASS: eight removal/weakening mutations fail the contract gate
+PASS: each live HTTP response is 400 INVALID_INPUT with the exact field, request ID, and safe headers
+PASS: rejected creates leave no item/event/idempotency/outbox state; valid same-key creates then succeed
+PASS: rejected assignment leaves version/status/assignee/event/outbox unchanged; the original-version valid assignment succeeds exactly once
+PASS: rejected replay remains FAILED in the same cycle with no replay event; the valid replay succeeds exactly once
+PASS: authorization precedes field validation, and direct service/store boundaries reject before persistence
+PASS: complete normal and race suites against live PostgreSQL
+```
+
+This validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization.

@@ -271,7 +271,7 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
 
-Work-item titles are single-line values of at most 200 Unicode code points. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport.
+Work-item titles are single-line values of at most 200 Unicode code points. After existing whitespace normalization, persisted title, description, assignment-reason, and notification-replay-reason fields reject U+0000 with a field-specific `400 INVALID_INPUT`; the matching OpenAPI properties exclude that code point. This is a narrow PostgreSQL text-compatibility rule, not general Unicode or control-character sanitization. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport.
 
 ## 13. Delivery guarantees and limitations
 
@@ -578,14 +578,14 @@ make compose-smoke
 The suite protects:
 
 - the complete manager/worker lifecycle, authorization and non-disclosure policy;
-- transport-invalid requests before mutation, stable errors/request IDs, ETags, replay headers, and all 11 public operations;
+- transport-invalid requests and PostgreSQL-incompatible U+0000 text before mutation, field-specific stable errors/request IDs, ETags, replay headers, and all 11 public operations;
 - immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, coherent repeatable-read notification detail, concurrency conflicts, and keyset traversal;
 - database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
 - one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;
 - bounded partial-index claim plans, default-planner notification page plans, tied-page traversal, graceful drain/forced recovery, and shared persisted worker-ID validation;
 - real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, quoted-printable body/header-line bounds at maximum accepted inputs, and header-injection behavior;
 - public/admin listener isolation, bounded metric labels, and last-good backlog caching;
-- the exact public OpenAPI method/path, security, response-status, schema, and response-header contract;
+- the exact public OpenAPI method/path, security, response-status, persisted-text pattern, schema, and response-header contract;
 - a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
 
 Commands and exact observed outcomes are recorded in [`docs/assessment/verification.md`](docs/assessment/verification.md). The review traceability and remaining debt are in [`docs/assessment/self-review.md`](docs/assessment/self-review.md).

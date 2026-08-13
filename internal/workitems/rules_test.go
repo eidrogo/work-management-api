@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/eidrogo/work-management-api/internal/auth"
 )
@@ -41,6 +42,87 @@ func TestValidateCreateInputEnforcesSMTPCompatibleTitleBoundaries(t *testing.T) 
 				t.Fatalf("code=%q details=%v", code, details)
 			}
 		})
+	}
+}
+
+func TestPersistedTextValidationRejectsOnlyNULWithFieldDetails(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, field, message string
+		validate             func() error
+	}{
+		{
+			name: "title", field: "title", message: "Title contains an unsupported character.",
+			validate: func() error {
+				_, err := ValidateCreateInput(CreateInput{Title: "  Quarterly\x00 handoff  ", IdempotencyKey: "nul-title"})
+				return err
+			},
+		},
+		{
+			name: "description", field: "description", message: "Description contains an unsupported character.",
+			validate: func() error {
+				_, err := ValidateCreateInput(CreateInput{Title: "Quarterly handoff", Description: "  Inspect\x00 loading dock  ", IdempotencyKey: "nul-description"})
+				return err
+			},
+		},
+		{
+			name: "assignment reason", field: "reason", message: "Reason contains an unsupported character.",
+			validate: func() error {
+				_, err := ValidateAssignmentInput(AssignmentInput{AssigneeID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Reason: "  Coverage\x00 changed  "})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := test.validate()
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error=%v", err)
+			}
+			code, message, details := ErrorContract(err)
+			if code != "INVALID_INPUT" || message != test.message || details["field"] != test.field {
+				t.Fatalf("code=%q message=%q details=%v", code, message, details)
+			}
+			if strings.Contains(strings.ToLower(message), "postgres") {
+				t.Fatalf("message exposes persistence internals: %q", message)
+			}
+		})
+	}
+}
+
+func TestPersistedTextValidationKeepsMaximumsAndOtherControls(t *testing.T) {
+	t.Parallel()
+	created, err := ValidateCreateInput(CreateInput{
+		Title:          strings.Repeat("界", 200),
+		Description:    strings.Repeat("界", 5000),
+		IdempotencyKey: "persisted-text-boundary",
+	})
+	if err != nil || utf8.RuneCountInString(created.Title) != 200 || utf8.RuneCountInString(created.Description) != 5000 {
+		t.Fatalf("create=%#v error=%v", created, err)
+	}
+	assignment, err := ValidateAssignmentInput(AssignmentInput{
+		AssigneeID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Reason:     strings.Repeat("界", 1000),
+	})
+	if err != nil || utf8.RuneCountInString(assignment.Reason) != 1000 {
+		t.Fatalf("assignment=%#v error=%v", assignment, err)
+	}
+	created, err = ValidateCreateInput(CreateInput{
+		Title:          "Quarterly\thandoff",
+		Description:    "Inspect\u0085loading dock",
+		IdempotencyKey: "persisted-text-controls",
+	})
+	if err != nil || created.Title != "Quarterly\thandoff" || created.Description != "Inspect\u0085loading dock" {
+		t.Fatalf("create=%#v error=%v", created, err)
+	}
+	assignment, err = ValidateAssignmentInput(AssignmentInput{
+		AssigneeID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Reason:     "Coverage\tchanged",
+	})
+	if err != nil || assignment.Reason != "Coverage\tchanged" {
+		t.Fatalf("assignment=%#v error=%v", assignment, err)
 	}
 }
 

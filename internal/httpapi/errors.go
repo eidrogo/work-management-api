@@ -70,11 +70,14 @@ func mapError(err error) (int, errorBody) {
 		return http.StatusForbidden, errorBody{Code: "PERMISSION_DENIED", Message: "You are not allowed to perform this action."}
 	case errors.Is(err, workitems.ErrResourceNotFound), errors.Is(err, notifications.ErrResourceNotFound):
 		return http.StatusNotFound, errorBody{Code: "RESOURCE_NOT_FOUND", Message: "The requested resource was not found."}
-	case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrIdempotencyKeyRequired), errors.Is(err, workitems.ErrExpectedVersionRequired), errors.Is(err, notifications.ErrInvalidInput):
+	case errors.Is(err, workitems.ErrInvalidInput), errors.Is(err, workitems.ErrIdempotencyKeyRequired), errors.Is(err, workitems.ErrExpectedVersionRequired):
 		code, message, details := workitems.ErrorContract(err)
 		if code == "INTERNAL_ERROR" {
 			code, message = "INVALID_INPUT", "The request contains invalid input."
 		}
+		return http.StatusBadRequest, errorBody{Code: code, Message: message, Details: details}
+	case errors.Is(err, notifications.ErrInvalidInput):
+		code, message, details := notifications.ErrorContract(err)
 		return http.StatusBadRequest, errorBody{Code: code, Message: message, Details: details}
 	case errors.Is(err, workitems.ErrAssigneeMustBeWorker), errors.Is(err, workitems.ErrReassignmentReasonRequired):
 		code, message, details := workitems.ErrorContract(err)

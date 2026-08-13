@@ -134,6 +134,86 @@ func TestTask2OpenAPIContract(t *testing.T) {
 	}
 }
 
+func TestPersistedTextSchemasExcludeNULExactly(t *testing.T) {
+	document := loadOpenAPIDocument(t)
+	if err := validatePersistedTextSchemas(document); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPersistedTextSchemaMutationGates(t *testing.T) {
+	document := loadOpenAPIDocument(t)
+	tests := []struct {
+		name, schema, field string
+		mutate              func(map[string]any)
+	}{
+		{name: "remove title pattern", schema: "CreateWorkItemRequest", field: "title", mutate: func(property map[string]any) { delete(property, "pattern") }},
+		{name: "weaken title pattern", schema: "CreateWorkItemRequest", field: "title", mutate: func(property map[string]any) { property["pattern"] = `^[^\r\n]+$` }},
+		{name: "remove description pattern", schema: "CreateWorkItemRequest", field: "description", mutate: func(property map[string]any) { delete(property, "pattern") }},
+		{name: "weaken description pattern", schema: "CreateWorkItemRequest", field: "description", mutate: func(property map[string]any) { property["pattern"] = `^.*$` }},
+		{name: "remove assignment reason pattern", schema: "AssignWorkItemRequest", field: "reason", mutate: func(property map[string]any) { delete(property, "pattern") }},
+		{name: "weaken assignment reason pattern", schema: "AssignWorkItemRequest", field: "reason", mutate: func(property map[string]any) { property["pattern"] = `^.*$` }},
+		{name: "remove replay reason pattern", schema: "ReplayNotificationRequest", field: "reason", mutate: func(property map[string]any) { delete(property, "pattern") }},
+		{name: "weaken replay reason pattern", schema: "ReplayNotificationRequest", field: "reason", mutate: func(property map[string]any) { property["pattern"] = `^.+$` }},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			mutated := cloneOpenAPIDocument(t, document)
+			property := object(t, object(t, object(t, object(t, mutated, "components"), "schemas"), test.schema), "properties")
+			test.mutate(object(t, property, test.field))
+			if err := validatePersistedTextSchemas(mutated); err == nil {
+				t.Fatal("mutated schema unexpectedly passed")
+			}
+		})
+	}
+}
+
+func validatePersistedTextSchemas(document map[string]any) error {
+	components, ok := document["components"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("components is missing")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("schemas is missing")
+	}
+	tests := []struct {
+		schema, field, pattern string
+		min, max               float64
+	}{
+		{schema: "CreateWorkItemRequest", field: "title", pattern: `^[^\u0000\r\n]+$`, min: 1, max: 200},
+		{schema: "CreateWorkItemRequest", field: "description", pattern: `^[^\u0000]*$`, max: 5000},
+		{schema: "AssignWorkItemRequest", field: "reason", pattern: `^[^\u0000]*$`, max: 1000},
+		{schema: "ReplayNotificationRequest", field: "reason", pattern: `^[^\u0000]+$`, min: 1, max: 1000},
+	}
+	for _, test := range tests {
+		schema, ok := schemas[test.schema].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s is missing", test.schema)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s properties are missing", test.schema)
+		}
+		property, ok := properties[test.field].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s field %s is missing", test.schema, test.field)
+		}
+		if property["type"] != "string" || property["pattern"] != test.pattern || property["maxLength"] != test.max {
+			return fmt.Errorf("schema %s field %s constraint=%v", test.schema, test.field, property)
+		}
+		if test.min == 0 {
+			if _, exists := property["minLength"]; exists {
+				return fmt.Errorf("schema %s field %s unexpectedly requires minLength", test.schema, test.field)
+			}
+		} else if property["minLength"] != test.min {
+			return fmt.Errorf("schema %s field %s minLength=%v", test.schema, test.field, property["minLength"])
+		}
+	}
+	return nil
+}
+
 func loadOpenAPIDocument(t *testing.T) map[string]any {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

@@ -3,12 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,6 +294,203 @@ func TestReplayHTTPPersistsExactRequestIDAndAuthenticatedActor(t *testing.T) {
 	}
 	if actorID != seed.ManagerID || storedRequestID != requestID || channel != string(notifications.ReplayChannelHTTP) || reason != "operator verified recipient" {
 		t.Fatalf("actor=%q request=%q channel=%q reason=%q", actorID, storedRequestID, channel, reason)
+	}
+}
+
+func TestHTTPRejectsNULPersistedTextWithoutSideEffects(t *testing.T) {
+	for _, test := range []struct {
+		name, field, message, body, idempotencyKey string
+	}{
+		{name: "title", field: "title", message: "Title contains an unsupported character.", body: `{"title":"Quarterly\u0000 handoff","description":"Inspect loading dock"}`, idempotencyKey: "nul-http-title"},
+		{name: "description", field: "description", message: "Description contains an unsupported character.", body: `{"title":"Quarterly handoff","description":"Inspect\u0000 loading dock"}`, idempotencyKey: "nul-http-description"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLiveHTTPFixture(t)
+			beforeItems := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`)
+			beforeEvents := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events`)
+			beforeNotifications := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries`)
+			requestID := "request-http-nul-" + test.field
+			response := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/work-items", seed.ManagerToken,
+				map[string]string{"Idempotency-Key": test.idempotencyKey, "X-Request-ID": requestID}, []byte(test.body))
+			assertHTTPInvalidField(t, response, requestID, test.field, test.message)
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`); got != beforeItems {
+				t.Fatalf("work items=%d want=%d", got, beforeItems)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events`); got != beforeEvents {
+				t.Fatalf("events=%d want=%d", got, beforeEvents)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM idempotency_keys WHERE idempotency_key=$1`, test.idempotencyKey); got != 0 {
+				t.Fatalf("idempotency records=%d", got)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries`); got != beforeNotifications {
+				t.Fatalf("notifications=%d want=%d", got, beforeNotifications)
+			}
+
+			validBody := []byte(`{"title":"Quarterly handoff","description":"Inspect loading dock"}`)
+			valid := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/work-items", seed.ManagerToken,
+				map[string]string{"Idempotency-Key": test.idempotencyKey, "X-Request-ID": requestID + "-valid"}, validBody)
+			assertHTTPResponse(t, valid, http.StatusCreated, `"1"`, "")
+			var created struct {
+				Data workitems.WorkItem `json:"data"`
+			}
+			decodeBody(t, valid, &created)
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items WHERE id=$1`, created.Data.ID); got != 1 {
+				t.Fatalf("created work items=%d", got)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events WHERE work_item_id=$1 AND event_type='WORK_ITEM_CREATED'`, created.Data.ID); got != 1 {
+				t.Fatalf("created events=%d", got)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM idempotency_keys WHERE idempotency_key=$1`, test.idempotencyKey); got != 1 {
+				t.Fatalf("idempotency records=%d", got)
+			}
+			if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries WHERE work_item_id=$1`, created.Data.ID); got != 0 {
+				t.Fatalf("created notifications=%d", got)
+			}
+		})
+	}
+
+	t.Run("assignment reason", func(t *testing.T) {
+		fixture := newLiveHTTPFixture(t)
+		created, err := fixture.itemService.Create(context.Background(), fixture.manager, workitems.CreateInput{Title: "NUL assignment", IdempotencyKey: "nul-http-assignment-create"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requestID := "request-http-nul-assignment"
+		body := []byte(`{"assignee_id":"` + seed.WorkerAliceID + `","reason":"Coverage\u0000 changed"}`)
+		response := doJSON(t, fixture.server.Client(), http.MethodPut, fixture.server.URL+"/v1/work-items/"+created.Item.ID+"/assignment", seed.ManagerToken,
+			map[string]string{"If-Match": `"1"`, "X-Request-ID": requestID}, body)
+		assertHTTPInvalidField(t, response, requestID, "reason", "Reason contains an unsupported character.")
+		unchanged, err := fixture.itemService.Get(context.Background(), fixture.manager, created.Item.ID)
+		if err != nil || unchanged.Version != 1 || unchanged.Status != workitems.StatusUnassigned || unchanged.AssigneeID != "" {
+			t.Fatalf("work item=%#v error=%v", unchanged, err)
+		}
+		if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events WHERE work_item_id=$1`, created.Item.ID); got != 1 {
+			t.Fatalf("events=%d", got)
+		}
+		if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries WHERE work_item_id=$1`, created.Item.ID); got != 0 {
+			t.Fatalf("notifications=%d", got)
+		}
+
+		valid := doJSON(t, fixture.server.Client(), http.MethodPut, fixture.server.URL+"/v1/work-items/"+created.Item.ID+"/assignment", seed.ManagerToken,
+			map[string]string{"If-Match": `"1"`, "X-Request-ID": requestID + "-valid"}, []byte(`{"assignee_id":"`+seed.WorkerAliceID+`","reason":"Coverage changed"}`))
+		assertHTTPResponse(t, valid, http.StatusOK, `"2"`, "")
+		_ = valid.Body.Close()
+		if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_item_events WHERE work_item_id=$1 AND event_type='WORK_ITEM_ASSIGNED'`, created.Item.ID); got != 1 {
+			t.Fatalf("assignment events=%d", got)
+		}
+		if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM notification_deliveries WHERE work_item_id=$1`, created.Item.ID); got != 1 {
+			t.Fatalf("notifications=%d", got)
+		}
+	})
+
+	t.Run("replay reason", func(t *testing.T) {
+		fixture := newLiveHTTPFixture(t)
+		created, err := fixture.itemService.Create(context.Background(), fixture.manager, workitems.CreateInput{Title: "NUL replay", IdempotencyKey: "nul-http-replay-create"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = fixture.itemService.Assign(context.Background(), fixture.manager, created.Item.ID, workitems.AssignmentInput{AssigneeID: seed.WorkerAliceID, ExpectedVersion: 1}); err != nil {
+			t.Fatal(err)
+		}
+		delivery, found, err := fixture.store.ClaimNext(context.Background(), notifications.ClaimRequest{WorkerID: "worker-http-nul", LeaseDuration: time.Minute, MaxAttempts: 3})
+		if err != nil || !found {
+			t.Fatalf("claim found=%v error=%v", found, err)
+		}
+		if err = fixture.store.Complete(context.Background(), notifications.Completion{DeliveryID: delivery.ID, WorkerID: "worker-http-nul", LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount, Outcome: notifications.OutcomeFailed, FailureCode: notifications.FailureSMTPRecipientRejected}); err != nil {
+			t.Fatal(err)
+		}
+		requestID := "request-http-nul-replay"
+		response := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/notifications/"+delivery.ID+"/replay", seed.ManagerToken,
+			map[string]string{"X-Request-ID": requestID}, []byte(`{"reason":"Provider\u0000 recovered"}`))
+		assertHTTPInvalidField(t, response, requestID, "reason", "Reason contains an unsupported character.")
+		unchanged, err := fixture.store.Get(context.Background(), delivery.ID)
+		if err != nil || unchanged.Status != notifications.StatusFailed || unchanged.DeliveryCycle != 1 || len(unchanged.Replays) != 0 || len(unchanged.Attempts) != 1 {
+			t.Fatalf("delivery=%#v error=%v", unchanged, err)
+		}
+
+		validReason := "Operator verified recipient"
+		valid := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/notifications/"+delivery.ID+"/replay", seed.ManagerToken,
+			map[string]string{"X-Request-ID": requestID + "-valid"}, []byte(`{"reason":"`+validReason+`"}`))
+		assertHTTPResponse(t, valid, http.StatusAccepted, "", "")
+		_ = valid.Body.Close()
+		replayed, err := fixture.store.Get(context.Background(), delivery.ID)
+		if err != nil || replayed.Status != notifications.StatusPending || replayed.DeliveryCycle != 2 || len(replayed.Replays) != 1 || replayed.Replays[0].Reason != validReason {
+			t.Fatalf("delivery=%#v error=%v", replayed, err)
+		}
+	})
+}
+
+func TestNULValidationPreservesAuthorizationPrecedence(t *testing.T) {
+	fixture := newLiveHTTPFixture(t)
+	beforeItems := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`)
+	response := doJSON(t, fixture.server.Client(), http.MethodPost, fixture.server.URL+"/v1/work-items", seed.WorkerAliceToken,
+		map[string]string{"Idempotency-Key": "nul-worker-create", "X-Request-ID": "request-nul-worker-create"}, []byte(`{"title":"Denied\u0000 title"}`))
+	assertHTTPError(t, response, http.StatusForbidden, "PERMISSION_DENIED")
+	if got := postgrestest.Count(t, fixture.db, `SELECT count(*) FROM work_items`); got != beforeItems {
+		t.Fatalf("work items=%d want=%d", got, beforeItems)
+	}
+}
+
+type liveHTTPFixture struct {
+	db          *sql.DB
+	server      *httptest.Server
+	itemService *workitems.Service
+	store       *notifications.Store
+	manager     auth.Principal
+}
+
+func newLiveHTTPFixture(t *testing.T) liveHTTPFixture {
+	t.Helper()
+	db := postgrestest.Open(t)
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	if _, err := seed.Apply(context.Background(), db, clock.Fixed{Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	authService := auth.NewService(auth.PostgresTokenStore{DB: db}, clock.Fixed{Time: now})
+	itemService, err := workitems.NewService(db, clock.Fixed{Time: now}, id.NewUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := notifications.NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notificationService, err := notifications.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewServer(ServerConfig{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Authenticator: authService, WorkItems: itemService, Notifications: notificationService, RequestID: id.NewUUID, MaxBodyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return liveHTTPFixture{
+		db:          db,
+		server:      server,
+		itemService: itemService,
+		store:       store,
+		manager:     auth.Principal{ID: seed.ManagerID, Role: auth.RoleManager, DisplayName: "Maya Manager"},
+	}
+}
+
+func assertHTTPInvalidField(t *testing.T, response *http.Response, requestID, field, message string) {
+	t.Helper()
+	assertHTTPResponse(t, response, http.StatusBadRequest, "", "")
+	if got := response.Header.Get("X-Request-ID"); got != requestID {
+		t.Fatalf("X-Request-ID=%q want=%q", got, requestID)
+	}
+	if got := response.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options=%q", got)
+	}
+	var body errorEnvelope
+	decodeBody(t, response, &body)
+	if body.Error.Code != "INVALID_INPUT" || body.Error.Message != message || body.Error.RequestID != requestID || len(body.Error.Details) != 1 || body.Error.Details["field"] != field {
+		t.Fatalf("error=%#v", body.Error)
+	}
+	if strings.Contains(strings.ToLower(body.Error.Message), "postgres") {
+		t.Fatalf("message exposes persistence internals: %q", body.Error.Message)
 	}
 }
 
