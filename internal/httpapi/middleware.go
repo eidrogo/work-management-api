@@ -77,7 +77,11 @@ func (server *Server) accessLogMiddleware(next http.Handler) http.Handler {
 		}
 		duration := time.Since(started)
 		if server.metrics != nil {
-			server.metrics.RecordHTTP(r.Method, routePattern(r.URL.Path), writer.status, duration)
+			route := "/unknown"
+			if r.URL.EscapedPath() == r.URL.Path && canonicalAPIPath(r.URL.Path) {
+				route = routePattern(r.URL.Path)
+			}
+			server.metrics.RecordHTTP(r.Method, route, writer.status, duration)
 		}
 		server.logger.Info("http request", "request_id", requestIDFrom(r.Context()), "method", r.Method, "path", r.URL.Path, "status", writer.status, "duration_ms", duration.Milliseconds())
 	})

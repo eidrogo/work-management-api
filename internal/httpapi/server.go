@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 )
 
@@ -22,7 +23,6 @@ func NewServer(config ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("invalid HTTP server configuration")
 	}
 	server := &Server{logger: config.Logger, authenticator: config.Authenticator, workItems: config.WorkItems, notifications: config.Notifications, requestID: config.RequestID, maxBodyBytes: config.MaxBodyBytes, metrics: config.MetricRecorder}
-	root := http.NewServeMux()
 	api := http.NewServeMux()
 	api.HandleFunc("/v1/work-items", server.handleWorkItems)
 	api.HandleFunc("/v1/work-items/", server.handleWorkItem)
@@ -31,16 +31,26 @@ func NewServer(config ServerConfig) (*Server, error) {
 	api.HandleFunc("/v1/notifications/", server.handleNotification)
 	api.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) { server.writeError(w, r, notFound()) })
 	exactBusinessRoutes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/") {
+		if strings.HasSuffix(r.URL.Path, "/") || r.URL.EscapedPath() != r.URL.Path || !canonicalAPIPath(r.URL.Path) {
 			server.writeError(w, r, notFound())
 			return
 		}
 		api.ServeHTTP(w, r)
 	})
-	root.Handle("/v1/", server.authenticate(exactBusinessRoutes))
-	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { server.writeError(w, r, notFound()) })
+	authenticatedAPI := server.authenticate(exactBusinessRoutes)
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.EscapedPath(), "/v1/") {
+			authenticatedAPI.ServeHTTP(w, r)
+			return
+		}
+		server.writeError(w, r, notFound())
+	})
 	server.handler = server.requestIDMiddleware(server.recoveryMiddleware(server.accessLogMiddleware(root)))
 	return server, nil
+}
+
+func canonicalAPIPath(value string) bool {
+	return path.Clean(value) == value
 }
 func (server *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	server.handler.ServeHTTP(w, r)
