@@ -45,7 +45,6 @@ var noncanonicalPublicPaths = []struct {
 }{
 	{name: "bare API prefix", method: http.MethodGet, path: "/v1"},
 	{name: "leading repeated slash", method: http.MethodPost, path: "//v1/work-items"},
-	{name: "encoded API prefix", method: http.MethodPost, path: "/%76%31/work-items"},
 }
 
 func TestNoncanonicalPathPreservesAccessAndMutationLoggingAndMetrics(t *testing.T) {
@@ -140,7 +139,13 @@ func TestDefaultHTTPClientCannotFollowNoncanonicalMutationPathIntoApplication(t 
 }
 
 func TestNoncanonicalV1PathsPreserveAuthenticationPrecedence(t *testing.T) {
-	for _, test := range noncanonicalMutationPaths {
+	tests := append([]struct {
+		name, method, path, body string
+	}{}, noncanonicalMutationPaths...)
+	tests = append(tests, struct {
+		name, method, path, body string
+	}{name: "encoded API prefix", method: http.MethodPost, path: "/%76%31/work-items", body: `{"title":"Inspect"}`})
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Run("direct handler", func(t *testing.T) {
 				work := &recordingWorkItems{}

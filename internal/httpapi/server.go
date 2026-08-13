@@ -39,7 +39,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 	})
 	authenticatedAPI := server.authenticate(exactBusinessRoutes)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.EscapedPath(), "/v1/") {
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			authenticatedAPI.ServeHTTP(w, r)
 			return
 		}
