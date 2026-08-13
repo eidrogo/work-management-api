@@ -54,7 +54,7 @@ Alert candidates include database unreadiness, rising oldest-pending age, no suc
      -H "Authorization: Bearer $MANAGER" | jq
    ```
 
-2. Inspect `/v1/notifications/{id}`. Use the safe code/message, attempts, schedule, current cycle, and replay history. Lease owner/expiry can aid diagnosis, but the UUID lease token is never public.
+2. Inspect `/v1/notifications/{id}`. Use the safe code/message, attempts, schedule, current cycle, and replay history. These fields come from one repeatable-read database snapshot. Lease owner/expiry can aid diagnosis, but the UUID lease token is never public.
 3. Correct the cause. Provider-specific responses belong in access-controlled provider telemetry, not replay reasons or durable error rows.
 4. Replay through one explicit channel.
 
@@ -87,6 +87,8 @@ The HTTP path stores the authenticated manager and request ID. The CLI requires 
 A stopped worker does not roll back assignments: pending rows remain durable and backlog age increases. Restart or scale workers after restoring dependencies. Another worker can reclaim only after PostgreSQL time reaches the lease expiry; recovery appends `ABANDONED`, uses a fresh database UUID token, and starts a new attempt. Stale owners/tokens/attempts and expired leases cannot complete a row. `LEASE_DURATION` must exceed `SMTP_TIMEOUT`. `WORKER_BATCH_SIZE` limits sequential claim/send iterations per poll; it does not reserve a batch of leases.
 
 On `SIGINT`/`SIGTERM`, the worker stops new claims and concurrently shuts down its admin server. An already active SMTP transaction and its fenced database completion retain a live context for up to `SHUTDOWN_TIMEOUT`. A clean drain exits successfully. At the deadline, SMTP I/O is interrupted, the admin server is force-closed, and both goroutines are reaped before the database closes; the row can remain `PROCESSING` until normal lease recovery. When deadline cancellation intersects an unhandled sender or completion failure, the process error includes the deadline and preserves the returned operation errors; `context.Canceled` is synthesized only when the current operation returned no error. Size the shutdown budget for the configured SMTP timeout and expected database completion latency. `WORKER_ID` must be valid UTF-8, 1–255 Unicode code points after trimming, and contain no control characters; invalid configured values prevent startup before readiness.
+
+`SMTP_FROM_NAME` and effective parsed sender/recipient display names must be valid UTF-8, at most 200 Unicode code points, and free of control characters. Invalid configured sender names prevent startup before dependencies/listeners; the adapter repeats this validation before any SMTP dial. Message bodies are quoted-printable encoded without discarding the assignment reason, and generated physical header/body lines are bounded to 998 octets.
 
 ## Failure modes
 

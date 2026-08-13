@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/eidrogo/work-management-api/internal/platform/id"
 	"github.com/eidrogo/work-management-api/internal/seed"
 	"github.com/eidrogo/work-management-api/internal/testsupport/postgrestest"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 const testLease = 2 * time.Second
@@ -287,6 +291,50 @@ func TestCompletionUsesDatabaseTimeAndRetryDelay(t *testing.T) {
 	}
 }
 
+func TestGetUsesOneSnapshotWhenCompletionCommitsBetweenDetailQueries(t *testing.T) {
+	writerDB := postgrestest.Open(t)
+	deliveryID := insertDueDeliveries(t, writerDB, 1)[0]
+	writerStore, _ := NewStore(writerDB)
+	delivery, found, err := writerStore.ClaimNext(context.Background(), ClaimRequest{WorkerID: "worker-snapshot", LeaseDuration: 30 * time.Second, MaxAttempts: 3})
+	if err != nil || !found {
+		t.Fatalf("claim found=%v error=%v", found, err)
+	}
+
+	gate := newQueryTraceGate("FROM notification_attempts")
+	readerStore, _ := NewStore(openTracedReader(t, writerDB, gate))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type getResult struct {
+		delivery Delivery
+		err      error
+	}
+	result := make(chan getResult, 1)
+	go func() {
+		got, getErr := readerStore.Get(ctx, deliveryID)
+		result <- getResult{delivery: got, err: getErr}
+	}()
+	waitForQueryGate(t, ctx, gate)
+	if err = writerStore.Complete(ctx, sentCompletion(delivery, "worker-snapshot")); err != nil {
+		t.Fatal(err)
+	}
+	gate.Release()
+
+	var snapshot getResult
+	select {
+	case snapshot = <-result:
+	case <-ctx.Done():
+		t.Fatalf("Get did not finish: %v", ctx.Err())
+	}
+	if snapshot.err != nil || snapshot.delivery.Status != StatusProcessing || snapshot.delivery.AttemptCount != 1 || len(snapshot.delivery.Attempts) != 0 {
+		t.Fatalf("snapshot=%#v error=%v", snapshot.delivery, snapshot.err)
+	}
+	fresh, err := writerStore.Get(ctx, deliveryID)
+	if err != nil || fresh.Status != StatusSent || fresh.AttemptCount != 1 || len(fresh.Attempts) != 1 || fresh.Attempts[0].Outcome != OutcomeSent {
+		t.Fatalf("fresh=%#v error=%v", fresh, err)
+	}
+	assertGetSnapshotTrace(t, gate)
+}
+
 func TestSlowWorkerDoesNotReserveSecondWorkersDelivery(t *testing.T) {
 	db := postgrestest.Open(t)
 	insertDueDeliveries(t, db, 2)
@@ -556,6 +604,44 @@ func TestReplayEventsAreAppendOnlyAndReturnedByGet(t *testing.T) {
 	}
 }
 
+func TestGetUsesOneSnapshotWhenReplayCommitsBetweenDetailQueries(t *testing.T) {
+	writerDB := postgrestest.Open(t)
+	writerStore, deliveryID := insertFailedDelivery(t, writerDB, 1)
+	gate := newQueryTraceGate("FROM notification_replay_events")
+	readerStore, _ := NewStore(openTracedReader(t, writerDB, gate))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type getResult struct {
+		delivery Delivery
+		err      error
+	}
+	result := make(chan getResult, 1)
+	go func() {
+		got, getErr := readerStore.Get(ctx, deliveryID)
+		result <- getResult{delivery: got, err: getErr}
+	}()
+	waitForQueryGate(t, ctx, gate)
+	if _, err := writerStore.Replay(ctx, ReplayRequest{NotificationID: deliveryID, ActorID: "manager-snapshot", RequestID: "request-snapshot", Channel: ReplayChannelHTTP, Reason: "provider recovered"}); err != nil {
+		t.Fatal(err)
+	}
+	gate.Release()
+
+	var snapshot getResult
+	select {
+	case snapshot = <-result:
+	case <-ctx.Done():
+		t.Fatalf("Get did not finish: %v", ctx.Err())
+	}
+	if snapshot.err != nil || snapshot.delivery.Status != StatusFailed || snapshot.delivery.DeliveryCycle != 1 || len(snapshot.delivery.Attempts) != 1 || len(snapshot.delivery.Replays) != 0 {
+		t.Fatalf("snapshot=%#v error=%v", snapshot.delivery, snapshot.err)
+	}
+	fresh, err := writerStore.Get(ctx, deliveryID)
+	if err != nil || fresh.Status != StatusPending || fresh.DeliveryCycle != 2 || len(fresh.Attempts) != 1 || len(fresh.Replays) != 1 || fresh.Replays[0].DeliveryCycle != 2 {
+		t.Fatalf("fresh=%#v error=%v", fresh, err)
+	}
+	assertGetSnapshotTrace(t, gate)
+}
+
 func insertFailedDelivery(t *testing.T, db *sql.DB, cycle int) (*Store, string) {
 	t.Helper()
 	ids := insertDueDeliveries(t, db, 1)
@@ -822,6 +908,105 @@ func databaseNow(t *testing.T, db *sql.DB) time.Time {
 
 func sentCompletion(delivery Delivery, workerID string) Completion {
 	return Completion{DeliveryID: delivery.ID, WorkerID: workerID, LeaseToken: delivery.LeaseToken, AttemptNumber: delivery.AttemptCount, Outcome: OutcomeSent}
+}
+
+type queryTraceGate struct {
+	query       string
+	entered     chan struct{}
+	release     chan struct{}
+	enterOnce   sync.Once
+	releaseOnce sync.Once
+	mu          sync.Mutex
+	queries     []string
+}
+
+func newQueryTraceGate(query string) *queryTraceGate {
+	return &queryTraceGate{query: query, entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (gate *queryTraceGate) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	gate.mu.Lock()
+	gate.queries = append(gate.queries, data.SQL)
+	gate.mu.Unlock()
+	if strings.Contains(data.SQL, gate.query) {
+		gate.enterOnce.Do(func() { close(gate.entered) })
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+		}
+	}
+	return ctx
+}
+
+func (*queryTraceGate) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (gate *queryTraceGate) Release() {
+	gate.releaseOnce.Do(func() { close(gate.release) })
+}
+
+func openTracedReader(t *testing.T, source *sql.DB, tracer pgx.QueryTracer) *sql.DB {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection, err := source.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config *pgx.ConnConfig
+	err = connection.Raw(func(driverConnection any) error {
+		stdlibConnection, ok := driverConnection.(*stdlib.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected PostgreSQL driver connection %T", driverConnection)
+		}
+		config = stdlibConnection.Conn().Config()
+		return nil
+	})
+	_ = connection.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Tracer = tracer
+	db := stdlib.OpenDB(*config, stdlib.OptionAfterConnect(func(_ context.Context, connection *pgx.Conn) error {
+		connection.TypeMap().RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID, Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC}})
+		return nil
+	}))
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err = db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func waitForQueryGate(t *testing.T, ctx context.Context, gate *queryTraceGate) {
+	t.Helper()
+	t.Cleanup(gate.Release)
+	select {
+	case <-gate.entered:
+	case <-ctx.Done():
+		t.Fatalf("Get did not reach %q: %v", gate.query, ctx.Err())
+	}
+}
+
+func assertGetSnapshotTrace(t *testing.T, gate *queryTraceGate) {
+	t.Helper()
+	gate.mu.Lock()
+	queries := append([]string(nil), gate.queries...)
+	gate.mu.Unlock()
+	joined := strings.ToLower(strings.Join(queries, "\n"))
+	for _, expected := range []string{
+		"begin isolation level repeatable read read only",
+		"from notification_deliveries where id=$1",
+		"from notification_attempts where notification_id=$1",
+		"from notification_replay_events where notification_id=$1",
+		"commit",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("trace omits %q: %v", expected, queries)
+		}
+	}
 }
 
 type blockingSender struct {

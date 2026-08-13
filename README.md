@@ -271,7 +271,7 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
 
-Work-item titles are single-line values of at most 200 Unicode code points. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding so the generated header line stays within the SMTP line limit. The SMTP adapter independently rejects header newlines before dialing.
+Work-item titles are single-line values of at most 200 Unicode code points. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport.
 
 ## 13. Delivery guarantees and limitations
 
@@ -542,7 +542,7 @@ SMTP_TLS_INSECURE_SKIP_VERIFY=false
 SMTP_TIMEOUT=10s
 ```
 
-Production configuration rejects plaintext SMTP and TLS verification bypass. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
+Production configuration rejects plaintext SMTP and TLS verification bypass. `SMTP_FROM_NAME`, including an effective name embedded in `SMTP_FROM`, must be valid UTF-8, contain no control characters, and contain at most 200 Unicode code points; invalid values stop worker configuration before dependencies or listeners. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
 
 ## 21. Tests and verification
 
@@ -579,11 +579,11 @@ The suite protects:
 
 - the complete manager/worker lifecycle, authorization and non-disclosure policy;
 - transport-invalid requests before mutation, stable errors/request IDs, ETags, replay headers, and all 11 public operations;
-- immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, concurrency conflicts, and keyset traversal;
+- immutable create-idempotency snapshots, atomic assignment/history/outbox behavior, coherent repeatable-read notification detail, concurrency conflicts, and keyset traversal;
 - database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
 - one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;
 - bounded partial-index claim plans, default-planner notification page plans, tied-page traversal, graceful drain/forced recovery, and shared persisted worker-ID validation;
-- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, header-line bounds, and header-injection behavior;
+- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, quoted-printable body/header-line bounds at maximum accepted inputs, and header-injection behavior;
 - public/admin listener isolation, bounded metric labels, and last-good backlog caching;
 - the exact public OpenAPI method/path, security, response-status, schema, and response-header contract;
 - a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
@@ -598,7 +598,7 @@ Commands and exact observed outcomes are recorded in [`docs/assessment/verificat
 - Worker admin liveness/readiness/metrics: the equivalent routes on `127.0.0.1:9091`
 - JSON logs to stdout
 - Request ID in API responses and error bodies
-- Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; lease tokens remain internal
+- Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; each detail aggregate uses one read-only repeatable-read snapshot, and lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
 `WORKER_ID` must be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.

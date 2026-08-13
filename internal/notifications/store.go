@@ -321,14 +321,19 @@ func notificationListQuery(input ListInput) (string, []any, error) {
 }
 
 func (store *Store) Get(ctx context.Context, notificationID string) (Delivery, error) {
-	delivery, err := scanDelivery(store.db.QueryRowContext(ctx, "SELECT "+notificationColumns+" FROM notification_deliveries WHERE id=$1", notificationID))
+	tx, err := store.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return Delivery{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	delivery, err := scanDelivery(tx.QueryRowContext(ctx, "SELECT "+notificationColumns+" FROM notification_deliveries WHERE id=$1", notificationID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Delivery{}, ErrResourceNotFound
 	}
 	if err != nil {
 		return Delivery{}, err
 	}
-	rows, err := store.db.QueryContext(ctx, `SELECT id,attempt_number,worker_id,outcome,COALESCE(error_code,''),COALESCE(error_message,''),started_at,finished_at
+	rows, err := tx.QueryContext(ctx, `SELECT id,attempt_number,worker_id,outcome,COALESCE(error_code,''),COALESCE(error_message,''),started_at,finished_at
 FROM notification_attempts WHERE notification_id=$1 ORDER BY attempt_number ASC`, notificationID)
 	if err != nil {
 		return Delivery{}, err
@@ -350,7 +355,7 @@ FROM notification_attempts WHERE notification_id=$1 ORDER BY attempt_number ASC`
 	if err = rows.Close(); err != nil {
 		return Delivery{}, err
 	}
-	replayRows, err := store.db.QueryContext(ctx, `SELECT id,delivery_cycle,actor_id,request_id,channel,reason,occurred_at
+	replayRows, err := tx.QueryContext(ctx, `SELECT id,delivery_cycle,actor_id,request_id,channel,reason,occurred_at
 FROM notification_replay_events WHERE notification_id=$1 ORDER BY id ASC`, notificationID)
 	if err != nil {
 		return Delivery{}, err
@@ -363,7 +368,17 @@ FROM notification_replay_events WHERE notification_id=$1 ORDER BY id ASC`, notif
 		}
 		delivery.Replays = append(delivery.Replays, replay)
 	}
-	return delivery, replayRows.Err()
+	if err = replayRows.Err(); err != nil {
+		_ = replayRows.Close()
+		return Delivery{}, err
+	}
+	if err = replayRows.Close(); err != nil {
+		return Delivery{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Delivery{}, err
+	}
+	return delivery, nil
 }
 
 func (store *Store) Replay(ctx context.Context, request ReplayRequest) (Delivery, error) {

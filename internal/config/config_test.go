@@ -38,6 +38,41 @@ func TestLoadWorkerValidatesPersistedWorkerIDContract(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerValidatesEffectiveSMTPFromDisplayName(t *testing.T) {
+	tests := []struct {
+		name, from, fromName string
+		wantError            bool
+	}{
+		{name: "200 ASCII runes", from: "work@example.test", fromName: strings.Repeat("a", 200)},
+		{name: "200 two-byte runes", from: "work@example.test", fromName: strings.Repeat("é", 200)},
+		{name: "200 four-byte runes", from: "work@example.test", fromName: strings.Repeat("😀", 200)},
+		{name: "201 runes", from: "work@example.test", fromName: strings.Repeat("a", 201), wantError: true},
+		{name: "invalid UTF-8", from: "work@example.test", fromName: string([]byte{'b', 0xff}), wantError: true},
+		{name: "NUL control", from: "work@example.test", fromName: "bad\x00name", wantError: true},
+		{name: "tab control", from: "work@example.test", fromName: "bad\tname", wantError: true},
+		{name: "trimmed tab control", from: "work@example.test", fromName: "\tWork Management", wantError: true},
+		{name: "C1 control", from: "work@example.test", fromName: "bad\u0085name", wantError: true},
+		{name: "invalid embedded effective name", from: "=?utf-8?q?bad=00name?= <work@example.test>", fromName: "", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := workerValues()
+			values["SMTP_FROM"] = test.from
+			values["SMTP_FROM_NAME"] = test.fromName
+			worker, err := LoadWorker(mapLookup(values))
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "SMTP_FROM_NAME") {
+					t.Fatalf("worker=%#v error=%v", worker, err)
+				}
+				return
+			}
+			if err != nil || worker.SMTP.FromName != test.fromName {
+				t.Fatalf("worker=%#v error=%v", worker, err)
+			}
+		})
+	}
+}
+
 func TestGeneratedWorkerIDIsValidForLongHostname(t *testing.T) {
 	generated := generatedWorkerID(strings.Repeat("é", 400), 12345)
 	if len([]rune(generated)) > 255 {

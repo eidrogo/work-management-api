@@ -29,7 +29,7 @@ Each send iteration fetches PostgreSQL `clock_timestamp()` once, reads at most o
 
 ## 4:45–5:45 — SMTP boundary, safe failures, and replay
 
-The adapter supports plain SMTP for local Mailpit, verified STARTTLS, and implicit TLS, with optional AUTH and bounded/cancelable operations. Titles reject CR/LF before persistence, long Unicode titles retain their full body text while the subject is rune-safely bounded, and the SMTP layer still rejects header newlines before dialing. `SENT` means the server accepted the completed SMTP transaction, not inbox placement or final delivery. Acceptance followed by a worker crash before the database update can cause a resend; the stable `Message-ID` helps reconciliation but cannot make generic SMTP exactly once. Only allowlisted codes and fixed generic messages persist. A manager can replay a terminal failure with a reason; replay attribution and state commit together and stop at cycle 10. CLI actor identity is explicitly self-asserted by an operator with database/config access.
+The adapter supports plain SMTP for local Mailpit, verified STARTTLS, and implicit TLS, with optional AUTH and bounded/cancelable operations. Titles reject CR/LF before persistence and long Unicode titles retain their full body text while the subject is rune-safely bounded. The SMTP layer prebuilds the full MIME payload before dialing, validates effective display names, folds structured headers, and quoted-printable encodes the complete body so maximum accepted names and 1,000-rune reasons remain under the 998-octet physical-line ceiling. `SENT` means the server accepted the completed SMTP transaction, not inbox placement or final delivery. Acceptance followed by a worker crash before the database update can cause a resend; the stable `Message-ID` helps reconciliation but cannot make generic SMTP exactly once. Only allowlisted codes and fixed generic messages persist. A manager can replay a terminal failure with a reason; replay attribution and state commit together and stop at cycle 10. CLI actor identity is explicitly self-asserted by an operator with database/config access.
 
 ## 5:45–6:30 — Idempotency and optimistic concurrency
 
@@ -37,7 +37,7 @@ Create stores actor, operation, client key, request hash, resource, and the immu
 
 ## 6:30–7:15 — Keyset indexes and query behavior
 
-Work and notification lists use `(created_at DESC, id DESC)` boundaries; history uses per-item sequence order. Opaque cursors seek into indexes rather than using offsets. Large tied-timestamp tests traverse pages without duplicates or omissions and use default-planner JSON `EXPLAIN` evidence that rejects sequential scans and all sort nodes for each notification query shape. Inserts between pages do not create a frozen snapshot; the contract is stable forward traversal from the supplied boundary.
+Work and notification lists use `(created_at DESC, id DESC)` boundaries; history uses per-item sequence order. Opaque cursors seek into indexes rather than using offsets. Large tied-timestamp tests traverse pages without duplicates or omissions and use default-planner JSON `EXPLAIN` evidence that rejects sequential scans and all sort nodes for each notification query shape. Inserts between pages do not create a frozen snapshot; the contract is stable forward traversal from the supplied boundary. A single notification detail, unlike a multi-page traversal, reads current state and both histories from one read-only repeatable-read snapshot.
 
 ## 7:15–8:15 — Observability and administrative behavior
 

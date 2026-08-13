@@ -96,7 +96,7 @@ sequenceDiagram
     end
 ```
 
-Assignment never waits for SMTP. The item update, event, and initial outbox row either commit together or all roll back. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`. Generic SMTP is therefore intentionally at least once.
+Assignment never waits for SMTP. The item update, event, and initial outbox row either commit together or all roll back. Before opening a connection, the adapter builds the complete MIME payload, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`. Generic SMTP is therefore intentionally at least once.
 
 Only an allowlisted failure code and fixed generic message are persisted or returned. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
 
@@ -113,5 +113,6 @@ Only an allowlisted failure code and fixed generic message are persisted or retu
 - `work_items` is current operational state; creator and completed state are database-protected.
 - `work_item_events`, `notification_attempts`, and `notification_replay_events` are append-only histories.
 - `notification_deliveries` owns current delivery, retry, safe-error, cycle, schedule, and lease state.
+- Notification detail reads current delivery, attempts, and replay events inside one read-only `REPEATABLE READ` transaction so one response cannot mix histories committed after its current-state snapshot.
 - PostgreSQL `clock_timestamp()` controls due checks, lease validity, completion fencing, recovery, retry, and replay scheduling; process clocks do not decide persisted eligibility.
 - Work-item and notification lists use keyset indexes over their documented sort boundaries. History uses item sequence order. Large default-planner tests traverse tied pages and reject sequential scans and sort nodes while requiring the matching notification page index. Claim-plan tests similarly require both ordered partial indexes.

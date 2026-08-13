@@ -14,7 +14,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"mime"
+	"mime/quotedprintable"
 	"net"
+	"net/mail"
 	"net/textproto"
 	"strconv"
 	"strings"
@@ -294,8 +297,14 @@ func TestSMTPClientRejectsHeaderInjectionBeforeDial(t *testing.T) {
 	}
 	for _, message := range []notifications.Message{
 		{To: "alice@example.test", ToName: "Alice\r\nBcc: attacker@example.test", Subject: "Subject", MessageID: "<id@example.test>"},
+		{To: "alice@example.test", ToName: strings.Repeat("a", 201), Subject: "Subject", MessageID: "<id@example.test>"},
+		{To: "alice@example.test", ToName: "Alice\tAdmin", Subject: "Subject", MessageID: "<id@example.test>"},
+		{To: "alice@example.test", ToName: "Alice\u0085Admin", Subject: "Subject", MessageID: "<id@example.test>"},
+		{To: "alice@example.test", ToName: string([]byte{'A', 0xff}), Subject: "Subject", MessageID: "<id@example.test>"},
+		{To: "=?utf-8?q?bad=00name?= <alice@example.test>", Subject: "Subject", MessageID: "<id@example.test>"},
 		{To: "alice@example.test", Subject: "Subject\r\nBcc: attacker@example.test", MessageID: "<id@example.test>"},
 		{To: "alice@example.test", Subject: "Subject", MessageID: "<id@example.test>\r\nBcc: attacker@example.test"},
+		{To: "alice@example.test", Subject: "Subject", MessageID: "<" + strings.Repeat("x", 1000) + "@example.test>"},
 	} {
 		err = client.Send(context.Background(), message)
 		if err == nil || notifications.IsRetryable(err) || notifications.FailureCodeOf(err) != notifications.FailureSMTPConfiguration {
@@ -312,14 +321,133 @@ func TestSMTPClientRejectsHeaderInjectionBeforeDial(t *testing.T) {
 	}
 }
 
+func TestBuildMessageBoundsAcceptedReasonAndRecipientNameLines(t *testing.T) {
+	tests := []struct {
+		name     string
+		toName   string
+		textBody string
+	}{
+		{name: "1000 ASCII reason", toName: "Alice", textBody: "Assignment reason: " + strings.Repeat("a", 1000) + "\n"},
+		{name: "200 emoji recipient name", toName: strings.Repeat("😀", 200), textBody: "body\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			from := &mail.Address{Name: "Work Management", Address: "work@example.test"}
+			to := &mail.Address{Name: test.toName, Address: "alice@example.test"}
+			payload, err := buildMessage(from, to, notifications.Message{
+				To: to.Address, ToName: to.Name, Subject: "New work assigned", TextBody: test.textBody,
+				MessageID: "<notification-boundary@example.test>",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if maximum := maximumPhysicalLineLength(payload); maximum > 998 {
+				t.Fatalf("maximum serialized line=%d octets, want <=998", maximum)
+			}
+		})
+	}
+}
+
+func TestBuildMessagePreservesAcceptedBoundaryMIMEValues(t *testing.T) {
+	longAddress := strings.Repeat("l", 64) + "@" + strings.Repeat("d", 63) + "." + strings.Repeat("e", 63) + "." + strings.Repeat("f", 61)
+	boundarySubject := "New work assigned: " + strings.Repeat("😀", 60) + "…"
+	tests := []struct {
+		name, fromName, fromAddress, toName, toAddress, subject, textBody string
+	}{
+		{name: "1000 ASCII reason", fromName: "Work Management", fromAddress: "work@example.test", toName: "Alice", toAddress: "alice@example.test", subject: "New work assigned: Demo item", textBody: "Assignment reason: " + strings.Repeat("a", 1000) + "\n"},
+		{name: "1000 four-byte reason and 200 ASCII names", fromName: strings.Repeat("S", 200), fromAddress: "work@example.test", toName: strings.Repeat("R", 200), toAddress: "alice@example.test", subject: boundarySubject, textBody: "Assignment reason: " + strings.Repeat("😀", 1000) + "\n"},
+		{name: "200 two-byte names and long addresses", fromName: strings.Repeat("é", 200), fromAddress: longAddress, toName: strings.Repeat("é", 200), toAddress: longAddress, subject: boundarySubject, textBody: "complete reason\n"},
+		{name: "200 four-byte names", fromName: strings.Repeat("😀", 200), fromAddress: "work@example.test", toName: strings.Repeat("😀", 200), toAddress: "alice@example.test", subject: boundarySubject, textBody: "complete reason\n"},
+		{name: "quoted local part remains indivisible", fromName: "Sender", fromAddress: "sender@example.test", toName: "Alice  Admin", toAddress: "alice admin@example.test", subject: "New work assigned", textBody: "complete reason\n"},
+		{name: "accepted subject controls are transfer encoded", fromName: "Sender", fromAddress: "sender@example.test", toName: "Alice", toAddress: "alice@example.test", subject: "New work assigned: Control\tTitle\u0085", textBody: "complete reason\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			from := &mail.Address{Name: test.fromName, Address: test.fromAddress}
+			to := &mail.Address{Name: test.toName, Address: test.toAddress}
+			message := notifications.Message{To: test.toAddress, ToName: test.toName, Subject: test.subject, TextBody: test.textBody, MessageID: "<notification-mime-boundary@example.test>"}
+			payload, err := buildMessage(from, to, message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertMIMEMessage(t, payload, from, to, message)
+			if test.name == "1000 ASCII reason" && !strings.Contains(payload, "\r\nSubject: New work assigned: Demo item\r\n") {
+				t.Fatalf("short ASCII demo Subject changed:\n%s", payload)
+			}
+		})
+	}
+}
+
+func TestSMTPClientLineEnforcingServerAcceptsMaximumASCIIReason(t *testing.T) {
+	server := newSMTPServer(t)
+	server.maximumDataLineOctets = 998
+	defer server.Close()
+	host, port := server.Address(t)
+	client, err := NewSMTP(Config{Host: host, Port: port, From: "work@example.test", FromName: "Work Management", TLSMode: TLSPlain, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := notifications.Message{
+		To: "alice@example.test", ToName: "Alice", Subject: "New work assigned: Boundary item",
+		TextBody: "Assignment reason: " + strings.Repeat("a", 1000) + "\n", MessageID: "<notification-line-boundary@example.test>",
+	}
+	err = client.Send(context.Background(), message)
+	payload := server.Message(t)
+	if err != nil {
+		t.Fatalf("send error=%v maximum DATA line=%d", err, server.MaximumObservedLine())
+	}
+	assertMIMEMessage(t, payload, client.from, &mail.Address{Name: message.ToName, Address: message.To}, message)
+}
+
+func TestSMTPClientLineEnforcingServerAcceptsWorstCaseUnicodeBoundaries(t *testing.T) {
+	server := newSMTPServer(t)
+	server.maximumDataLineOctets = 998
+	defer server.Close()
+	host, port := server.Address(t)
+	longAddress := strings.Repeat("l", 64) + "@" + strings.Repeat("d", 63) + "." + strings.Repeat("e", 63) + "." + strings.Repeat("f", 61)
+	name := strings.Repeat("😀", 200)
+	client, err := NewSMTP(Config{Host: host, Port: port, From: longAddress, FromName: name, TLSMode: TLSPlain, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := notifications.Message{
+		To: longAddress, ToName: name, Subject: "New work assigned: " + strings.Repeat("😀", 60) + "…",
+		TextBody: "Assignment reason: " + strings.Repeat("😀", 1000) + "\n.\n", MessageID: "<notification-unicode-boundary@example.test>",
+	}
+	if err = client.Send(context.Background(), message); err != nil {
+		t.Fatalf("send error=%v maximum DATA line=%d", err, server.MaximumObservedLine())
+	}
+	payload := server.Message(t)
+	assertMIMEMessage(t, payload, client.from, &mail.Address{Name: name, Address: longAddress}, message)
+}
+
+func TestSMTPValidatesEffectiveDisplayNames(t *testing.T) {
+	accepted := []string{strings.Repeat("a", 200), strings.Repeat("é", 200), strings.Repeat("😀", 200)}
+	for _, name := range accepted {
+		if _, err := NewSMTP(Config{Host: "127.0.0.1", Port: 1025, From: "work@example.test", FromName: name, TLSMode: TLSPlain, Timeout: time.Second}); err != nil {
+			t.Fatalf("accepted %d-rune name: %v", len([]rune(name)), err)
+		}
+	}
+	for _, name := range []string{strings.Repeat("a", 201), "bad\x00name", "bad\tname", "bad\nname", "bad\x7fname", "bad\u0085name", string([]byte{'b', 0xff})} {
+		if _, err := NewSMTP(Config{Host: "127.0.0.1", Port: 1025, From: "work@example.test", FromName: name, TLSMode: TLSPlain, Timeout: time.Second}); err == nil {
+			t.Fatalf("invalid sender name %q was accepted", name)
+		}
+	}
+	if _, err := NewSMTP(Config{Host: "127.0.0.1", Port: 1025, From: "=?utf-8?q?bad=00name?= <work@example.test>", TLSMode: TLSPlain, Timeout: time.Second}); err == nil {
+		t.Fatal("invalid embedded sender name was accepted")
+	}
+}
+
 type smtpServer struct {
-	listener            net.Listener
-	mu                  sync.Mutex
-	message             string
-	rcptResponse        string
-	dataAccepted        chan struct{}
-	releaseDataResponse chan struct{}
-	done                chan struct{}
+	listener              net.Listener
+	mu                    sync.Mutex
+	message               string
+	rcptResponse          string
+	maximumDataLineOctets int
+	maximumObservedLine   int
+	dataAccepted          chan struct{}
+	releaseDataResponse   chan struct{}
+	done                  chan struct{}
 }
 
 func newSMTPServer(t *testing.T) *smtpServer {
@@ -375,6 +503,15 @@ func (server *smtpServer) serve() {
 				if dataLine == ".\r\n" {
 					break
 				}
+				if strings.HasPrefix(dataLine, "..") {
+					dataLine = dataLine[1:]
+				}
+				content := strings.TrimSuffix(dataLine, "\r\n")
+				server.mu.Lock()
+				if len(content) > server.maximumObservedLine {
+					server.maximumObservedLine = len(content)
+				}
+				server.mu.Unlock()
 				lines = append(lines, dataLine)
 			}
 			server.mu.Lock()
@@ -386,7 +523,14 @@ func (server *smtpServer) serve() {
 			if server.releaseDataResponse != nil {
 				<-server.releaseDataResponse
 			}
-			write("250 accepted\r\n")
+			server.mu.Lock()
+			tooLong := server.maximumDataLineOctets > 0 && server.maximumObservedLine > server.maximumDataLineOctets
+			server.mu.Unlock()
+			if tooLong {
+				write("552 DATA line too long\r\n")
+			} else {
+				write("250 accepted\r\n")
+			}
 		case command == "QUIT":
 			write("221 bye\r\n")
 			return
@@ -394,6 +538,11 @@ func (server *smtpServer) serve() {
 			write("250 OK\r\n")
 		}
 	}
+}
+func (server *smtpServer) MaximumObservedLine() int {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return server.maximumObservedLine
 }
 func (server *smtpServer) Message(t *testing.T) string {
 	deadline := time.Now().Add(time.Second)
@@ -619,11 +768,72 @@ func (server *tlsSMTPServer) Close() {
 
 func assertSMTPMessage(t *testing.T, got string, want notifications.Message) {
 	t.Helper()
-	for _, fragment := range []string{want.To, want.Subject, want.TextBody, "Message-ID: " + want.MessageID} {
-		if !strings.Contains(got, fragment) {
-			t.Fatalf("message omits %q:\n%s", fragment, got)
+	to, err := mail.ParseAddress(want.To)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to.Name = want.ToName
+	assertMIMEMessage(t, got, nil, to, want)
+}
+
+func assertMIMEMessage(t *testing.T, payload string, wantFrom, wantTo *mail.Address, want notifications.Message) {
+	t.Helper()
+	if strings.ReplaceAll(payload, "\r\n", "") != strings.ReplaceAll(strings.ReplaceAll(payload, "\r\n", ""), "\n", "") || strings.Contains(strings.ReplaceAll(payload, "\r\n", ""), "\r") {
+		t.Fatal("message contains a bare CR or LF")
+	}
+	if maximum := maximumPhysicalLineLength(payload); maximum > 998 {
+		t.Fatalf("maximum serialized line=%d octets, want <=998", maximum)
+	}
+	parsed, err := mail.ReadMessage(strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transfer := parsed.Header.Get("Content-Transfer-Encoding"); !strings.EqualFold(transfer, "quoted-printable") {
+		t.Fatalf("Content-Transfer-Encoding=%q", transfer)
+	}
+	mediaType, parameters, err := mime.ParseMediaType(parsed.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" || !strings.EqualFold(parameters["charset"], "UTF-8") {
+		t.Fatalf("Content-Type=%q media=%q parameters=%v error=%v", parsed.Header.Get("Content-Type"), mediaType, parameters, err)
+	}
+	decodedSubject, err := new(mime.WordDecoder).DecodeHeader(parsed.Header.Get("Subject"))
+	if err != nil || decodedSubject != want.Subject {
+		t.Fatalf("subject=%q error=%v want=%q", decodedSubject, err, want.Subject)
+	}
+	if parsed.Header.Get("Message-ID") != want.MessageID {
+		t.Fatalf("Message-ID=%q want=%q", parsed.Header.Get("Message-ID"), want.MessageID)
+	}
+	if wantFrom != nil {
+		gotFrom, parseErr := mail.ParseAddress(parsed.Header.Get("From"))
+		if parseErr != nil || gotFrom.Name != wantFrom.Name || gotFrom.Address != wantFrom.Address {
+			t.Fatalf("From=%#v error=%v want=%#v", gotFrom, parseErr, wantFrom)
 		}
 	}
+	gotTo, err := mail.ParseAddress(parsed.Header.Get("To"))
+	if err != nil || gotTo.Name != wantTo.Name || gotTo.Address != wantTo.Address {
+		t.Fatalf("To=%#v error=%v want=%#v", gotTo, err, wantTo)
+	}
+	decodedBody, err := io.ReadAll(quotedprintable.NewReader(parsed.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := normalizeCRLF(want.TextBody)
+	gotBody := string(decodedBody)
+	if !strings.HasSuffix(wantBody, "\r\n") && gotBody == wantBody+"\r\n" {
+		gotBody = strings.TrimSuffix(gotBody, "\r\n")
+	}
+	if gotBody != wantBody {
+		t.Fatalf("decoded body length=%d want=%d", len(decodedBody), len(wantBody))
+	}
+}
+
+func maximumPhysicalLineLength(payload string) int {
+	maximum := 0
+	for _, line := range strings.Split(payload, "\r\n") {
+		if len(line) > maximum {
+			maximum = len(line)
+		}
+	}
+	return maximum
 }
 
 func testCertificate(t *testing.T) tls.Certificate {

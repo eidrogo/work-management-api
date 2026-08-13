@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/eidrogo/work-management-api/internal/notifications"
+	platformemail "github.com/eidrogo/work-management-api/internal/platform/email"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -169,8 +170,22 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 	if err != nil {
 		return Worker{}, err
 	}
-	if _, err := mail.ParseAddress(from); err != nil {
+	fromAddress, err := mail.ParseAddress(from)
+	if err != nil {
 		return Worker{}, fmt.Errorf("SMTP_FROM must be a valid address: %w", err)
+	}
+	fromName := "Work Management"
+	if configuredFromName, configured := lookup("SMTP_FROM_NAME"); configured {
+		if err = platformemail.ValidateDisplayName(configuredFromName); err != nil {
+			return Worker{}, fmt.Errorf("SMTP_FROM_NAME is invalid: %w", err)
+		}
+		fromName = strings.TrimSpace(configuredFromName)
+	}
+	if fromName != "" {
+		fromAddress.Name = fromName
+	}
+	if err = platformemail.ValidateDisplayName(fromAddress.Name); err != nil {
+		return Worker{}, fmt.Errorf("SMTP_FROM_NAME is invalid: %w", err)
 	}
 	username := value(lookup, "SMTP_USERNAME", "")
 	password := value(lookup, "SMTP_PASSWORD", "")
@@ -256,7 +271,7 @@ func LoadWorker(lookup LookupEnv) (Worker, error) {
 		PollInterval: poll, BatchSize: batch, LeaseDuration: lease, MaxAttempts: attempts,
 		BackoffBase: base, BackoffMax: maximum, ShutdownTimeout: shutdown, LogLevel: level,
 		SMTP: SMTP{Host: host, Port: port, Username: username, Password: password, From: from,
-			FromName: value(lookup, "SMTP_FROM_NAME", "Work Management"), TLSMode: tlsMode,
+			FromName: fromName, TLSMode: tlsMode,
 			TLSServerName: value(lookup, "SMTP_TLS_SERVER_NAME", host), TLSInsecureSkipVerify: insecure, Timeout: timeout},
 	}, nil
 }

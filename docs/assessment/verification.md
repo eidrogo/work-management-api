@@ -595,3 +595,43 @@ PASS: lifecycle/coordinator focused suite under race detector, 20 repetitions
 ```
 
 `RunUntilStopped` now gives a non-nil operation result precedence over context state sampled after the operation. `processBatch` likewise preserves a sender error observed with cancellation and joins sender plus completion errors when completion observes cancellation. At the coordinator boundary, forced shutdown therefore retains both `context.DeadlineExceeded` and the exact completion sentinel through `errors.Is`.
+
+## FAIL then PASS — SMTP physical lines and coherent notification detail
+
+Focused commands:
+
+```bash
+go test -count=1 ./internal/platform/email ./internal/config
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=1 -run '^TestGetUsesOneSnapshot' -v ./internal/notifications
+go test -race -count=1 ./internal/platform/email ./internal/config
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -race -count=1 -run '^TestGetUsesOneSnapshot' ./internal/notifications
+TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=20 -run '^TestGetUsesOneSnapshot' ./internal/notifications
+go test -count=20 -run '^(TestSMTPClientLineEnforcingServerAccepts|TestBuildMessagePreservesAcceptedBoundaryMIMEValues)' ./internal/platform/email
+```
+
+RED evidence reproduced both validated blockers:
+
+```text
+maximum serialized accepted reason line=1019 octets
+maximum serialized 200-emoji recipient header=2944 octets
+real line-enforcing SMTP response=552 / SMTP_MESSAGE_REJECTED
+Get result=old PROCESSING delivery plus newly committed SENT attempt
+Get result=old FAILED cycle plus newly committed replay event
+```
+
+GREEN evidence:
+
+```text
+PASS: decoded full 1,000-rune ASCII and four-byte Unicode reasons
+PASS: 200-rune ASCII, two-byte, and four-byte sender/recipient display names
+PASS: long and quoted-local-part addresses plus bounded Unicode Subject
+PASS: every serialized physical line <=998 octets and quoted-printable body lines remain bounded
+PASS: real line-enforcing SMTP accepts both ASCII and worst-case Unicode boundary messages
+PASS: config and adapter reject invalid UTF-8, controls, and 201-rune effective names before dialing
+PASS: concurrent Complete interleaving returns wholly old PROCESSING snapshot; a fresh read is wholly SENT
+PASS: concurrent Replay interleaving returns wholly old FAILED snapshot; a fresh read is wholly PENDING cycle 2
+PASS: traced Get issues read-only REPEATABLE READ begin, all three reads, and commit
+PASS: focused SMTP/config and notification suites under race; both concurrency tests and SMTP boundary matrix pass 20 repetitions
+```
+
+The SMTP server in these tests is local and proves protocol acceptance only, not external inbox delivery. The reader gate is a test-only pgx query tracer on a dedicated database pool; production `Store.Get`, `Complete`, and `Replay` execute unchanged SQL paths without a production test hook or timing sleep.
