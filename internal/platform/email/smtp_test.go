@@ -273,9 +273,9 @@ func TestSMTPClientNegotiatesSTARTTLS(t *testing.T) {
 func TestSMTPClientNegotiatesImplicitTLS(t *testing.T) {
 	server := newTLSSMTPServer(t, false, true, true)
 	defer server.Close()
-	host, port := server.Address(t)
+	_, port := server.Address(t)
 	client, err := NewSMTP(Config{
-		Host: host, Port: port, From: "work@example.test",
+		Host: "localhost.", Port: port, From: "work@example.test",
 		Username: "smtp-user", Password: "smtp-password", TLSMode: TLSImplicit,
 		TLSServerName: "localhost", TLSInsecureSkipVerify: true, Timeout: 2 * time.Second,
 	})
@@ -284,7 +284,10 @@ func TestSMTPClientNegotiatesImplicitTLS(t *testing.T) {
 	}
 	message := notifications.Message{To: "alice@example.test", Subject: "Implicit TLS", TextBody: "Encrypted from connect", MessageID: "<notification-tls@example.test>"}
 	if err = client.Send(context.Background(), message); err != nil {
-		t.Fatal(err)
+		server.mu.Lock()
+		credentialsObserved := server.authenticated
+		server.mu.Unlock()
+		t.Fatalf("send error=%v credentials observed=%v", err, credentialsObserved)
 	}
 	got, encrypted, authenticated, _ := server.Result(t)
 	if !encrypted || !authenticated {

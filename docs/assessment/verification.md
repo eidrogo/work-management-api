@@ -718,3 +718,43 @@ PASS: focused SMTP matrix passes ten normal and ten race repetitions
 ```
 
 The SMTP cap is cumulative raw transport input, so TLS handshake/record bytes consume the same fixed quota and decrypted text cannot expand without bounded ciphertext. The post-DATA `250` is the durable server-acceptance boundary: a later QUIT failure must not create a duplicate-producing retry. The Docker frontend remains a tag-plus-index-digest pin; monthly Dependabot candidates require manual digest verification and the offline mutation gate before acceptance.
+
+## FAIL then PASS — implicit-TLS AUTH state mutation gate
+
+Provenance: independent review `/tmp/work-management-api-final-security-fix-review.md` found that the production code at `40cbd2ffd21b68f9948832c3089de148d7259732` correctly passed a concrete `*tls.Conn` to `smtp.NewClient`, but the regression used logical host `127.0.0.1`. `net/smtp.PlainAuth` permits credentials without detected TLS for that exact local address, so the documented test claim was not yet proved. Follow-up evidence is under `/tmp/work-management-api-security-fix2-evidence/`.
+
+Mutation and focused commands:
+
+```bash
+# Exact forbidden mutation:
+# connection = tlsConnection
+# becomes:
+# connection = newResponseLimitedConn(tlsConnection)
+go test ./internal/platform/email -run '^TestSMTPClientNegotiatesImplicitTLS$' -count=10
+
+# After changing only the test's logical Host to localhost. while retaining
+# the real listener port and TLSServerName localhost:
+go test ./internal/platform/email -run '^TestSMTPClientNegotiatesImplicitTLS$' -count=20
+go test -race ./internal/platform/email -run '^TestSMTPClientNegotiatesImplicitTLS$' -count=20
+```
+
+RED evidence on the original test:
+
+```text
+exact outer-wrapper mutation applied
+ok  github.com/eidrogo/work-management-api/internal/platform/email
+```
+
+The mutation survived because the test's logical host was `127.0.0.1`, not because production had lost TLS state.
+
+GREEN evidence after the test correction:
+
+```text
+localhost. resolves to ::1 and 127.0.0.1 on the supported macOS environment
+PASS: corrected current code, 20 normal and 20 race repetitions
+--- FAIL: TestSMTPClientNegotiatesImplicitTLS
+send error=The email service returned an unexpected response. credentials observed=false
+PASS: corrected test killed the exact outer-wrapper mutation before AUTH credentials were observed
+```
+
+The absolute `localhost.` logical name exercises the unchanged production resolver/dial/TLS path but is not in `net/smtp`'s exact localhost exemption. `TLSServerName` remains `localhost` for certificate identity, and no production-only test seam or global dial hook was added.
