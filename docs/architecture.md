@@ -96,7 +96,7 @@ sequenceDiagram
     end
 ```
 
-Assignment never waits for SMTP. The item update, event, and initial outbox row either commit together or all roll back. Before opening a connection, the adapter builds the complete MIME payload, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`. Generic SMTP is therefore intentionally at least once.
+Assignment never waits for SMTP. The item update, event, and initial outbox row either commit together or all roll back. Before opening a connection, the adapter builds the complete MIME payload, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. One sticky 1 MiB raw-transport read budget bounds the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`. Generic SMTP is therefore intentionally at least once.
 
 Only an allowlisted failure code and fixed generic message are persisted or returned. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
 

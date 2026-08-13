@@ -18,7 +18,7 @@ jobs:
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
-      - run: make build openapi-check secret-check compose-config-check docker-build
+      - run: make build openapi-check secret-check dockerfile-syntax-test compose-config-check docker-build
       - name: Complete PostgreSQL, race, stack, demo, listener, and cleanup verification
         run: make compose-smoke
         timeout-minutes: 20

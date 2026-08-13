@@ -271,7 +271,7 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
 
-Work-item titles are single-line values of at most 200 Unicode code points. After existing whitespace normalization, persisted title, description, assignment-reason, and notification-replay-reason fields reject U+0000 with a field-specific `400 INVALID_INPUT`; the matching OpenAPI properties exclude that code point. This is a narrow PostgreSQL text-compatibility rule, not general Unicode or control-character sanitization. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport.
+Work-item titles are single-line values of at most 200 Unicode code points. After existing whitespace normalization, persisted title, description, assignment-reason, and notification-replay-reason fields reject U+0000 with a field-specific `400 INVALID_INPUT`; the matching OpenAPI properties exclude that code point. This is a narrow PostgreSQL text-compatibility rule, not general Unicode or control-character sanitization. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport. Once connected, one sticky 1 MiB raw-transport read budget bounds all server-controlled SMTP responses and TLS records across the complete session, including STARTTLS; exceeding it is a permanent `SMTP_PROTOCOL_ERROR`.
 
 ## 13. Delivery guarantees and limitations
 
@@ -567,7 +567,7 @@ Authoritative local verification requires Docker Engine/Compose, Go, `curl`, `jq
 make verify-full
 ```
 
-`make verify-full` runs the static, lint, command-build, OpenAPI, secret, rendered-Compose, and image-build gates. It then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
+`make verify-full` runs the static, lint, command-build, OpenAPI, secret, Dockerfile-frontend-pin, rendered-Compose, and image-build gates. The offline Dockerfile gate mutation-tests all supported tracked naming forms and rejects mutable, misplaced, or duplicate syntax directives. Verification then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
 
 The same Compose authority is available without the surrounding static gates:
 
@@ -583,7 +583,7 @@ The suite protects:
 - database assignee/creator/completed and append-only constraints plus migration down/reapply behavior;
 - one-row database-time claims, UUID lease fencing, recovery, retry/exhaustion, safe failures, replay attribution, and the cycle ceiling;
 - bounded partial-index claim plans, default-planner notification page plans, tied-page traversal, graceful drain/forced recovery, and shared persisted worker-ID validation;
-- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, quoted-printable body/header-line bounds at maximum accepted inputs, and header-injection behavior;
+- real plain, STARTTLS, implicit-TLS, authenticated SMTP, authentication rejection, certificate rejection, greeting timeout, cancellation, cumulative 1 MiB malicious-response bounds at every protocol stage, quoted-printable body/header-line bounds at maximum accepted inputs, and header-injection behavior;
 - public/admin listener isolation, bounded metric labels, and last-good backlog caching;
 - the exact public OpenAPI method/path, security, response-status, persisted-text pattern, schema, and response-header contract;
 - a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
@@ -623,14 +623,27 @@ Implemented:
 - bounded request bodies and page sizes;
 - HTTP and SMTP timeouts;
 - minimum TLS 1.2 for SMTP TLS modes;
+- a cumulative 1 MiB inbound SMTP transport budget, including implicit TLS and STARTTLS;
 - secure production SMTP defaults;
 - no committed real secret;
 - safe client error messages;
 - immutable creator/completed rows and append-only histories;
-- pinned Go version and Docker image tags;
+- pinned Go version, Docker image tags, and digest-pinned Dockerfile syntax frontend;
 - separate loopback-default administrative listeners and IPv4-loopback-only Compose publications;
 - finite HTTP metric method/route labels and a fixed retained-series cap;
 - secret-pattern check.
+
+Dependabot's monthly Docker checks cover `FROM` images, not the parser-frontend comment. The maintainer must review the syntax frontend separately and keep it tag-plus-digest pinned. Refresh it deliberately:
+
+```bash
+candidate='sha256:<reviewed-candidate-index-digest>'
+tag_digest="$(docker buildx imagetools inspect docker/dockerfile:1.7 | awk '$1 == "Digest:" { print $2; exit }')"
+test "$tag_digest" = "$candidate"
+docker buildx imagetools inspect --raw "docker/dockerfile:1.7@$candidate" |
+  jq -e '.manifests | type == "array" and length > 0 and all(.[]; .digest | startswith("sha256:"))'
+```
+
+Review the returned platform manifest set, update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test docker-build`. Never replace the digest with a mutable tag-only directive.
 
 Before production:
 

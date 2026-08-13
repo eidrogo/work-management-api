@@ -2,6 +2,7 @@ package email
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -27,6 +29,128 @@ import (
 
 	"github.com/eidrogo/work-management-api/internal/notifications"
 )
+
+func TestSMTPClientRejectsOversizedServerResponsesWithinReadBudget(t *testing.T) {
+	tests := []struct {
+		name, stage string
+		mode        TLSMode
+		multiline   bool
+		auth        bool
+	}{
+		{name: "plain greeting single line", stage: "greeting", mode: TLSPlain},
+		{name: "plain EHLO multiline", stage: "ehlo", mode: TLSPlain, multiline: true},
+		{name: "STARTTLS pre-upgrade EHLO multiline", stage: "ehlo", mode: TLSSTARTTLS, multiline: true},
+		{name: "STARTTLS command single line", stage: "starttls", mode: TLSSTARTTLS},
+		{name: "STARTTLS encrypted EHLO multiline", stage: "encrypted-ehlo", mode: TLSSTARTTLS, multiline: true},
+		{name: "STARTTLS cumulative pre-and-post-upgrade responses", stage: "cumulative-starttls", mode: TLSSTARTTLS},
+		{name: "implicit TLS greeting multiline", stage: "greeting", mode: TLSImplicit, multiline: true},
+		{name: "AUTH single line", stage: "auth", mode: TLSSTARTTLS, auth: true},
+		{name: "MAIL multiline", stage: "mail", mode: TLSPlain, multiline: true},
+		{name: "RCPT single line", stage: "rcpt", mode: TLSPlain},
+		{name: "DATA command multiline", stage: "data", mode: TLSPlain, multiline: true},
+		{name: "post DATA single line", stage: "post-data", mode: TLSPlain},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newOversizedResponseSMTPServer(t, test.mode, test.stage, test.multiline, test.auth)
+			defer server.Close()
+			host, port := server.Address(t)
+			config := Config{Host: host, Port: port, From: "work@example.test", TLSMode: test.mode, TLSServerName: "localhost", TLSInsecureSkipVerify: true, Timeout: 2 * time.Second}
+			if test.auth {
+				config.Username, config.Password = "smtp-user", "smtp-password"
+			}
+			client, err := NewSMTP(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.Send(context.Background(), notifications.Message{To: "alice@example.test", Subject: "Oversized response", TextBody: "body", MessageID: "<oversized@example.test>"})
+			if err == nil {
+				t.Fatal("oversized SMTP response unexpectedly succeeded")
+			}
+			if notifications.IsRetryable(err) || notifications.FailureCodeOf(err) != notifications.FailureSMTPProtocol {
+				t.Fatalf("error=%v code=%q retryable=%v", err, notifications.FailureCodeOf(err), notifications.IsRetryable(err))
+			}
+			maximumServerWrite := maximumSMTPResponseBytes + maximumSMTPResponseWriteSlack
+			if test.stage == "cumulative-starttls" {
+				maximumServerWrite = 2*maximumSMTPResponseBytes*3/5 + maximumSMTPResponseWriteSlack
+			}
+			if server.BytesWritten() > maximumServerWrite {
+				t.Fatalf("server wrote %d bytes before client closed, maximum=%d", server.BytesWritten(), maximumServerWrite)
+			}
+		})
+	}
+}
+
+func TestSMTPClientDoesNotReadAfterAcceptedDATA(t *testing.T) {
+	server := newOversizedResponseSMTPServer(t, TLSPlain, "quit", false, false)
+	defer server.Close()
+	host, port := server.Address(t)
+	client, err := NewSMTP(Config{Host: host, Port: port, From: "work@example.test", TLSMode: TLSPlain, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.Send(context.Background(), notifications.Message{To: "alice@example.test", Subject: "Accepted", TextBody: "body", MessageID: "<accepted@example.test>"}); err != nil {
+		t.Fatal(err)
+	}
+	if server.BytesWritten() > 128 {
+		t.Fatalf("client issued QUIT and read an unnecessary server response after DATA acceptance: server bytes=%d", server.BytesWritten())
+	}
+}
+
+func TestSMTPResponseReadBudgetAcceptsExactBoundaryAndRejectsNextByte(t *testing.T) {
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+	limited := newResponseLimitedConn(left)
+	payload := bytes.Repeat([]byte{'x'}, maximumSMTPResponseBytes+1)
+	writeResult := make(chan error, 1)
+	go func() {
+		_, err := right.Write(payload)
+		writeResult <- err
+	}()
+	accepted := make([]byte, maximumSMTPResponseBytes)
+	if _, err := io.ReadFull(limited, accepted); err != nil {
+		t.Fatalf("exact response budget rejected: %v", err)
+	}
+	var next [1]byte
+	if _, err := limited.Read(next[:]); !errors.Is(err, errSMTPResponseTooLarge) {
+		t.Fatalf("budget+1 read error=%v", err)
+	}
+	if !errors.Is(limited.Err(), errSMTPResponseTooLarge) {
+		t.Fatalf("sticky limit error=%v", limited.Err())
+	}
+	_ = left.Close()
+	select {
+	case <-writeResult:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not unblock after bounded connection close")
+	}
+}
+
+func TestWriteSMTPPayloadDoesNotCloseAfterWriteFailure(t *testing.T) {
+	writeFailure := errors.New("DATA payload write failed")
+	writer := &failingSMTPDataWriter{writeErr: writeFailure}
+	payloadCopied, err := writeSMTPPayload(writer, "payload")
+	if !errors.Is(err, writeFailure) || payloadCopied {
+		t.Fatalf("payloadCopied=%v error=%v", payloadCopied, err)
+	}
+	if writer.closeCalls != 0 {
+		t.Fatalf("Close called %d time(s) after a failed payload write; Close would read a server response", writer.closeCalls)
+	}
+}
+
+type failingSMTPDataWriter struct {
+	writeErr   error
+	closeCalls int
+}
+
+func (writer *failingSMTPDataWriter) Write([]byte) (int, error) {
+	return 0, writer.writeErr
+}
+
+func (writer *failingSMTPDataWriter) Close() error {
+	writer.closeCalls++
+	return errSMTPResponseTooLarge
+}
 
 func TestSMTPClientSendsThroughRealTCPConnection(t *testing.T) {
 	server := newSMTPServer(t)
@@ -147,10 +271,14 @@ func TestSMTPClientNegotiatesSTARTTLS(t *testing.T) {
 }
 
 func TestSMTPClientNegotiatesImplicitTLS(t *testing.T) {
-	server := newTLSSMTPServer(t, false, true, false)
+	server := newTLSSMTPServer(t, false, true, true)
 	defer server.Close()
 	host, port := server.Address(t)
-	client, err := NewSMTP(Config{Host: host, Port: port, From: "work@example.test", TLSMode: TLSImplicit, TLSServerName: "localhost", TLSInsecureSkipVerify: true, Timeout: 2 * time.Second})
+	client, err := NewSMTP(Config{
+		Host: host, Port: port, From: "work@example.test",
+		Username: "smtp-user", Password: "smtp-password", TLSMode: TLSImplicit,
+		TLSServerName: "localhost", TLSInsecureSkipVerify: true, Timeout: 2 * time.Second,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,9 +286,9 @@ func TestSMTPClientNegotiatesImplicitTLS(t *testing.T) {
 	if err = client.Send(context.Background(), message); err != nil {
 		t.Fatal(err)
 	}
-	got, encrypted, _, _ := server.Result(t)
-	if !encrypted {
-		t.Fatal("implicit SMTP transaction was not encrypted")
+	got, encrypted, authenticated, _ := server.Result(t)
+	if !encrypted || !authenticated {
+		t.Fatalf("encrypted=%v authenticated=%v", encrypted, authenticated)
 	}
 	assertSMTPMessage(t, got, message)
 }
@@ -759,6 +887,210 @@ func (server *tlsSMTPServer) Result(t *testing.T) (string, bool, bool, int) {
 }
 
 func (server *tlsSMTPServer) Close() {
+	_ = server.listener.Close()
+	select {
+	case <-server.done:
+	case <-time.After(time.Second):
+	}
+}
+
+const maximumSMTPResponseWriteSlack = 64 << 10
+
+type oversizedResponseSMTPServer struct {
+	listener net.Listener
+	done     chan struct{}
+	mu       sync.Mutex
+	written  int
+}
+
+func newOversizedResponseSMTPServer(t *testing.T, mode TLSMode, stage string, multiline, auth bool) *oversizedResponseSMTPServer {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &oversizedResponseSMTPServer{listener: listener, done: make(chan struct{})}
+	certificate := testCertificate(t)
+	go server.serve(mode, stage, multiline, auth, certificate)
+	return server
+}
+
+func (server *oversizedResponseSMTPServer) Address(t *testing.T) (string, int) {
+	t.Helper()
+	host, portText, err := net.SplitHostPort(server.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
+}
+
+func (server *oversizedResponseSMTPServer) serve(mode TLSMode, oversizedStage string, multiline, auth bool, certificate tls.Certificate) {
+	defer close(server.done)
+	connection, err := server.listener.Accept()
+	if err != nil {
+		return
+	}
+	defer func() { _ = connection.Close() }()
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}
+	encrypted := false
+	if mode == TLSImplicit {
+		tlsConnection := tls.Server(connection, tlsConfig)
+		if err = tlsConnection.Handshake(); err != nil {
+			return
+		}
+		connection = tlsConnection
+		encrypted = true
+	}
+	reader := bufio.NewReader(connection)
+	writer := bufio.NewWriter(connection)
+	write := func(value string) bool {
+		count, writeErr := io.WriteString(writer, value)
+		server.mu.Lock()
+		server.written += count
+		server.mu.Unlock()
+		return writeErr == nil && writer.Flush() == nil
+	}
+	writeOversized := func(code string) bool {
+		var response string
+		if multiline {
+			response = code + "-" + strings.Repeat("x", maximumSMTPResponseBytes/2) + "\r\n" + code + " " + strings.Repeat("y", maximumSMTPResponseBytes/2) + "\r\n"
+		} else {
+			response = code + " " + strings.Repeat("x", maximumSMTPResponseBytes+1) + "\r\n"
+		}
+		return write(response)
+	}
+	writeCumulativePart := func(code, suffix string) bool {
+		const partBytes = maximumSMTPResponseBytes * 3 / 5
+		prefix := code + "-"
+		ending := "\r\n" + code + " " + suffix + "\r\n"
+		return write(prefix + strings.Repeat("c", partBytes-len(prefix)-len(ending)) + ending)
+	}
+	if oversizedStage == "greeting" {
+		_ = writeOversized("220")
+		return
+	}
+	if !write("220 test SMTP\r\n") {
+		return
+	}
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			return
+		}
+		command := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(command, "EHLO"):
+			if oversizedStage == "cumulative-starttls" {
+				if !encrypted {
+					if !writeCumulativePart("250", "STARTTLS") {
+						return
+					}
+				} else {
+					_ = writeCumulativePart("250", "test")
+				}
+				continue
+			}
+			if (oversizedStage == "ehlo" && !encrypted) || (oversizedStage == "encrypted-ehlo" && encrypted) {
+				_ = writeOversized("250")
+				return
+			}
+			if mode == TLSSTARTTLS && !encrypted {
+				if !write("250-test\r\n250 STARTTLS\r\n") {
+					return
+				}
+			} else if auth {
+				if !write("250-test\r\n250 AUTH PLAIN\r\n") {
+					return
+				}
+			} else if !write("250 test\r\n") {
+				return
+			}
+		case command == "STARTTLS" && mode == TLSSTARTTLS && !encrypted:
+			if oversizedStage == "starttls" {
+				_ = writeOversized("220")
+				return
+			}
+			if !write("220 ready for TLS\r\n") {
+				return
+			}
+			tlsConnection := tls.Server(connection, tlsConfig)
+			if err = tlsConnection.Handshake(); err != nil {
+				return
+			}
+			connection = tlsConnection
+			reader = bufio.NewReader(connection)
+			writer = bufio.NewWriter(connection)
+			encrypted = true
+		case strings.HasPrefix(command, "AUTH PLAIN"):
+			if oversizedStage == "auth" {
+				_ = writeOversized("235")
+				return
+			}
+			if !write("235 authenticated\r\n") {
+				return
+			}
+		case strings.HasPrefix(command, "MAIL FROM"):
+			if oversizedStage == "mail" {
+				_ = writeOversized("250")
+				return
+			}
+			if !write("250 OK\r\n") {
+				return
+			}
+		case strings.HasPrefix(command, "RCPT TO"):
+			if oversizedStage == "rcpt" {
+				_ = writeOversized("250")
+				return
+			}
+			if !write("250 OK\r\n") {
+				return
+			}
+		case command == "DATA":
+			if oversizedStage == "data" {
+				_ = writeOversized("354")
+				return
+			}
+			if !write("354 End data\r\n") {
+				return
+			}
+			for {
+				dataLine, dataErr := reader.ReadString('\n')
+				if dataErr != nil {
+					return
+				}
+				if dataLine == ".\r\n" {
+					break
+				}
+			}
+			if oversizedStage == "post-data" {
+				_ = writeOversized("250")
+				return
+			}
+			if !write("250 accepted\r\n") {
+				return
+			}
+		case command == "QUIT":
+			if oversizedStage == "quit" {
+				_ = write("221 " + strings.Repeat("q", maximumSMTPResponseBytes) + "\r\n")
+				return
+			}
+			_ = write("221 bye\r\n")
+			return
+		}
+	}
+}
+
+func (server *oversizedResponseSMTPServer) BytesWritten() int {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	return server.written
+}
+
+func (server *oversizedResponseSMTPServer) Close() {
 	_ = server.listener.Close()
 	select {
 	case <-server.done:

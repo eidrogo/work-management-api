@@ -676,3 +676,45 @@ PASS: complete normal and race suites against live PostgreSQL
 ```
 
 This validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization.
+
+## FAIL then PASS — bounded SMTP peer input and immutable Docker frontend
+
+Provenance: sealed Standard security scan `e85bce0a-eb40-4d20-bb52-762979bc126d` reported both findings against clean `7b7b53e09d444ce27ad8e69cbbf7326f175579b2`. The remediation logs are under `/tmp/work-management-api-security-fix-evidence/`: `smtp-red.txt`, `smtp-quit-red.txt`, `smtp-final-audit-red.txt`, `smtp-final-audit-green.txt`, `smtp-final-audit-race-green.txt`, `dockerfile-syntax-red.txt`, and `dockerfile-syntax-mutations-green.txt`.
+
+Focused commands:
+
+```bash
+go test ./internal/platform/email \
+  -run 'TestSMTPClientRejectsOversizedServerResponsesWithinReadBudget|TestSMTPResponseReadBudgetAcceptsExactBoundaryAndRejectsNextByte|TestSMTPClientDoesNotReadAfterAcceptedDATA|TestWriteSMTPPayloadDoesNotCloseAfterWriteFailure|TestSMTPClientNegotiatesImplicitTLS' \
+  -count=10
+go test -race ./internal/platform/email \
+  -run 'TestSMTPClientRejectsOversizedServerResponsesWithinReadBudget|TestSMTPResponseReadBudgetAcceptsExactBoundaryAndRejectsNextByte|TestSMTPClientDoesNotReadAfterAcceptedDATA|TestWriteSMTPPayloadDoesNotCloseAfterWriteFailure|TestSMTPClientNegotiatesImplicitTLS' \
+  -count=10
+make dockerfile-syntax-test
+```
+
+RED evidence reproduced both sealed findings and the acceptance-boundary edge:
+
+```text
+oversized greeting/EHLO/AUTH/envelope/DATA replies were retryable or reached the wrong failure class
+an oversized post-DATA response returned success
+the budget+1 byte read succeeded
+QUIT consumed a 1,048,651-byte response after an already accepted DATA transaction
+the mutable # syntax=docker/dockerfile:1.7 directive failed the new repository gate
+```
+
+GREEN evidence:
+
+```text
+PASS: one sticky 1 MiB raw-transport quota spans plain SMTP, implicit TLS, and both sides of STARTTLS
+PASS: malicious single-line and multiline replies at every important SMTP stage fail permanently as SMTP_PROTOCOL_ERROR
+PASS: exactly 1 MiB is readable and byte 1,048,577 returns a sticky sentinel
+PASS: implicit TLS retains concrete TLS state for authenticated SMTP
+PASS: a DATA payload write failure cannot trigger the net/smtp closer's additional peer-controlled read
+PASS: post-DATA 250 acceptance returns success and closes without issuing QUIT
+PASS: Dockerfile syntax uses docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+PASS: the NUL-safe offline gate case-insensitively covers Dockerfile, Dockerfile.*, and *.Dockerfile and rejects mutable, misplaced, or duplicate mixed-case directives
+PASS: focused SMTP matrix passes ten normal and ten race repetitions
+```
+
+The SMTP cap is cumulative raw transport input, so TLS handshake/record bytes consume the same fixed quota and decrypted text cannot expand without bounded ciphertext. The post-DATA `250` is the durable server-acceptance boundary: a later QUIT failure must not create a duplicate-producing retry. The Docker frontend remains a tag-plus-index-digest pin; monthly Dependabot candidates require manual digest verification and the offline mutation gate before acceptance.

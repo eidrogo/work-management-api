@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
-.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race test-db test-db-race lint build openapi-check secret-check compose-config-check verify-signal-check clean-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
+.PHONY: help fmt fmt-check tidy tidy-check mod-verify vet test test-race test-db test-db-race lint build openapi-check secret-check dockerfile-syntax-check dockerfile-syntax-test compose-config-check verify-signal-check clean-check verify verify-full compose-smoke migrate seed api worker up down reset logs demo docker-build
 help:
 	@printf '%s\n' 'make up - start the complete stack' 'make demo - run the documented flow' 'make verify - quick checks (DB-gated tests may skip)' 'make verify-full - authoritative clean-tree Compose verification'
 fmt:
@@ -39,6 +39,10 @@ openapi-check:
 	CGO_ENABLED=0 go test ./internal/contract -run TestOpenAPIContract -count=1
 secret-check:
 	./scripts/check-secrets.sh
+dockerfile-syntax-check:
+	./scripts/check-dockerfile-syntax.sh
+dockerfile-syntax-test: dockerfile-syntax-check
+	./scripts/test-dockerfile-syntax-check.sh
 compose-config-check:
 	./scripts/check-compose-config.sh
 verify-signal-check:
@@ -50,10 +54,10 @@ clean-check:
 	git diff --exit-code -- .
 	git diff --cached --exit-code -- .
 	@test -z "$$(git status --porcelain --untracked-files=all)" || (git status --short --untracked-files=all; exit 1)
-verify: fmt-check mod-verify tidy-check vet test test-race openapi-check secret-check build
-verify-full: fmt-check mod-verify tidy-check vet lint build openapi-check secret-check compose-config-check docker-build compose-smoke
+verify: fmt-check mod-verify tidy-check vet test test-race openapi-check secret-check dockerfile-syntax-test build
+verify-full: fmt-check mod-verify tidy-check vet lint build openapi-check secret-check dockerfile-syntax-test compose-config-check docker-build compose-smoke
 	$(MAKE) clean-check
-compose-smoke: verify-signal-check
+compose-smoke: dockerfile-syntax-check verify-signal-check
 	./scripts/verify-compose.sh
 migrate:
 	go run ./cmd/migrate up
@@ -63,7 +67,7 @@ api:
 	go run ./cmd/api
 worker:
 	go run ./cmd/worker
-up:
+up: dockerfile-syntax-check
 	docker compose up --build -d
 down:
 	docker compose down
@@ -73,5 +77,5 @@ logs:
 	docker compose logs --follow api worker
 demo:
 	./scripts/demo.sh
-docker-build:
+docker-build: dockerfile-syntax-check
 	docker build -t work-management-api:local .

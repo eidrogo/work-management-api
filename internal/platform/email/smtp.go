@@ -16,6 +16,7 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -33,7 +34,55 @@ const (
 	maximumMessageLineOctets          = 998
 	preferredHeaderLineOctets         = 78
 	maximumEncodedWordBytes           = 45
+	maximumSMTPResponseBytes          = 1 << 20
 )
+
+var errSMTPResponseTooLarge = errors.New("SMTP server response exceeds the read limit")
+
+type responseLimitedConn struct {
+	net.Conn
+	mu        sync.Mutex
+	remaining int64
+	exceeded  bool
+}
+
+var _ net.Conn = (*responseLimitedConn)(nil)
+
+func newResponseLimitedConn(connection net.Conn) *responseLimitedConn {
+	return &responseLimitedConn{Conn: connection, remaining: maximumSMTPResponseBytes}
+}
+
+func (connection *responseLimitedConn) Read(destination []byte) (int, error) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.exceeded {
+		return 0, errSMTPResponseTooLarge
+	}
+	if connection.remaining == 0 {
+		var probe [1]byte
+		count, err := connection.Conn.Read(probe[:])
+		if count > 0 {
+			connection.exceeded = true
+			return 0, errSMTPResponseTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(destination)) > connection.remaining {
+		destination = destination[:connection.remaining]
+	}
+	count, err := connection.Conn.Read(destination)
+	connection.remaining -= int64(count)
+	return count, err
+}
+
+func (connection *responseLimitedConn) Err() error {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.exceeded {
+		return errSMTPResponseTooLarge
+	}
+	return nil
+}
 
 type Config struct {
 	Host, Username, Password, From, FromName, TLSServerName string
@@ -109,11 +158,15 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 	}
 	stopCancellationInterrupt := context.AfterFunc(ctx, func() { _ = raw.SetDeadline(time.Now()) })
 	defer stopCancellationInterrupt()
-	connection := raw
+	limitedRaw := newResponseLimitedConn(raw)
+	connection := net.Conn(limitedRaw)
 	if sender.config.TLSMode == TLSImplicit {
-		tlsConnection := tls.Client(raw, sender.tlsConfig())
+		tlsConnection := tls.Client(limitedRaw, sender.tlsConfig())
 		if err = tlsConnection.HandshakeContext(ctx); err != nil {
 			_ = raw.Close()
+			if limitedErr := limitedRaw.Err(); limitedErr != nil {
+				return classifySMTPResponseLimit(limitedErr)
+			}
 			return classify(smtpStageTLS, err)
 		}
 		connection = tlsConnection
@@ -121,42 +174,83 @@ func (sender *SMTP) Send(ctx context.Context, message notifications.Message) err
 	client, err := smtp.NewClient(connection, sender.config.Host)
 	if err != nil {
 		_ = connection.Close()
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		return classify(smtpStageProtocol, err)
 	}
 	defer func() { _ = client.Close() }()
 	if sender.config.TLSMode == TLSSTARTTLS {
 		supported, _ := client.Extension("STARTTLS")
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		if !supported {
 			return notifications.Permanent(notifications.FailureSMTPConfiguration, errors.New("SMTP server does not advertise STARTTLS"))
 		}
 		if err = client.StartTLS(sender.tlsConfig()); err != nil {
+			if limitedErr := limitedRaw.Err(); limitedErr != nil {
+				return classifySMTPResponseLimit(limitedErr)
+			}
 			return classify(smtpStageTLS, err)
 		}
 	}
 	if sender.config.Username != "" {
 		if err = client.Auth(smtp.PlainAuth("", sender.config.Username, sender.config.Password, sender.config.Host)); err != nil {
+			if limitedErr := limitedRaw.Err(); limitedErr != nil {
+				return classifySMTPResponseLimit(limitedErr)
+			}
 			return classify(smtpStageAuthentication, err)
 		}
 	}
 	if err = client.Mail(sender.from.Address); err != nil {
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		return classify(smtpStageMessage, err)
 	}
 	if err = client.Rcpt(to.Address); err != nil {
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		return classify(smtpStageRecipient, err)
 	}
 	writer, err := client.Data()
 	if err != nil {
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		return classify(smtpStageMessage, err)
 	}
-	if _, err = io.Copy(writer, strings.NewReader(payload)); err != nil {
-		_ = writer.Close()
+	payloadCopied, err := writeSMTPPayload(writer, payload)
+	if err != nil && !payloadCopied {
+		// smtp.dataCloser.Close reads the server's final response. After a
+		// payload write failure, do not enter another peer-controlled read.
 		return classify(smtpStageConnection, err)
 	}
-	if err = writer.Close(); err != nil {
+	if err != nil {
+		if limitedErr := limitedRaw.Err(); limitedErr != nil {
+			return classifySMTPResponseLimit(limitedErr)
+		}
 		return classify(smtpStageMessage, err)
 	}
-	_ = client.Quit()
+	if limitedErr := limitedRaw.Err(); limitedErr != nil {
+		return classifySMTPResponseLimit(limitedErr)
+	}
+	// The post-DATA 250 response is the SMTP acceptance boundary. Close rather
+	// than issuing QUIT: a QUIT failure must not turn accepted mail into a retry.
 	return nil
+}
+
+func writeSMTPPayload(writer io.WriteCloser, payload string) (bool, error) {
+	if _, err := io.Copy(writer, strings.NewReader(payload)); err != nil {
+		return false, err
+	}
+	return true, writer.Close()
+}
+
+func classifySMTPResponseLimit(err error) error {
+	return notifications.Permanent(notifications.FailureSMTPProtocol, err)
 }
 func (sender *SMTP) tlsConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, ServerName: sender.config.TLSServerName, InsecureSkipVerify: sender.config.TLSInsecureSkipVerify}
