@@ -1,12 +1,12 @@
 # Work Management API
 
-A greenfield Go backend that acts as the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email intent is durable before a worker submits the message to the configured SMTP server. SMTP acceptance is not proof of external inbox delivery.
+I built this greenfield Go backend as the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email intent is durable before a worker submits the message to the configured SMTP server. SMTP acceptance is not proof of external inbox delivery.
 
-This is an assessment implementation, not a claim of production readiness. It intentionally concentrates on correctness, explicit invariants, transaction boundaries, failure visibility, operability, and a credible evolution path.
+I built this as an assessment implementation, not a claim of production readiness. I intentionally concentrated on correctness, explicit invariants, transaction boundaries, failure visibility, operability, and a credible evolution path.
 
 ## 1. Purpose
 
-The service replaces ad hoc messages, spreadsheets, and email threads with a versioned backend API that records:
+I built the service to replace ad hoc messages, spreadsheets, and email threads with a versioned backend API that records:
 
 - who created a work item;
 - who currently owns it;
@@ -15,7 +15,7 @@ The service replaces ad hoc messages, spreadsheets, and email threads with a ver
 - the durable assignment-email intent;
 - every notification delivery attempt and terminal failure.
 
-The repository contains one Go module with independently runnable API and notification-worker processes.
+I organized the repository as one Go module with independently runnable API and notification-worker processes.
 
 ## 2. Scope
 
@@ -43,11 +43,11 @@ The repository contains one Go module with independently runnable API and notifi
 
 ### Explicit non-goals
 
-Frontend, signup, passwords, account management, production identity issuance, comments, attachments, subtasks, recurrence, scheduling, configurable workflows, cancellation, deletion, reopen, arbitrary backward transitions, Kafka, Redis, Kubernetes, cloud infrastructure, multi-region, multi-team tenancy, a full webhook platform, SMS, and push notifications.
+I intentionally excluded frontend, signup, passwords, account management, production identity issuance, comments, attachments, subtasks, recurrence, scheduling, configurable workflows, cancellation, deletion, reopen, arbitrary backward transitions, Kafka, Redis, Kubernetes, cloud infrastructure, multi-region, multi-team tenancy, a full webhook platform, SMS, and push notifications.
 
 ## 3. Scenario interpretation
 
-The smallest coherent system is a manager-defined, worker-executed forward workflow:
+I interpreted the smallest coherent system as a manager-defined, worker-executed forward workflow:
 
 ```text
 UNASSIGNED -> ASSIGNED -> IN_PROGRESS -> COMPLETED
@@ -55,11 +55,13 @@ UNASSIGNED -> ASSIGNED -> IN_PROGRESS -> COMPLETED
 
 Managers define ownership and see the whole workload, but never advance worker progress. Workers read and mutate only work currently assigned to them. Work may begin without an assignee. Once completed, it is immutable in v1.
 
-Reassignment is allowed only while `ASSIGNED`, keeps the item in `ASSIGNED`, requires a reason, appends a new event, and sends the new assignee a new email. Active work cannot be reassigned in this version because silently transferring in-flight responsibility has materially different business semantics.
+I allow reassignment only while `ASSIGNED`: it keeps the item in `ASSIGNED`, requires a reason, appends a new event, and sends the new assignee a new email. I do not allow active-work reassignment in this version because silently transferring in-flight responsibility has materially different business semantics.
 
-The full ambiguity record is in [`docs/assessment/ambiguities.md`](docs/assessment/ambiguities.md).
+I recorded the full ambiguity analysis in [`docs/assessment/ambiguities.md`](docs/assessment/ambiguities.md).
 
 ## 4. Assumptions
+
+I made these assumptions:
 
 1. Only managers create work items.
 2. Users have exactly one v1 role: `MANAGER` or `WORKER`.
@@ -96,6 +98,8 @@ The full ambiguity record is in [`docs/assessment/ambiguities.md`](docs/assessme
 
 ### Deliberate rejections
 
+I deliberately rejected:
+
 - Worker creates or assigns work.
 - Manager starts/completes worker work.
 - Worker reads or mutates another worker’s work.
@@ -120,7 +124,7 @@ The full ambiguity record is in [`docs/assessment/ambiguities.md`](docs/assessme
 | View item history | Allow | Allow | Hidden as 404 |
 | Inspect/replay notification | Allow | Deny | Deny |
 
-Authorization is enforced in `internal/workitems` and `internal/notifications`, below the HTTP transport.
+I enforce authorization in `internal/workitems` and `internal/notifications`, below the HTTP transport.
 
 ## 7. Lifecycle and invariants
 
@@ -134,7 +138,7 @@ stateDiagram-v2
     COMPLETED --> [*]
 ```
 
-Core invariants:
+I enforce these core invariants:
 
 - The authenticated actor never comes from a request body.
 - Creator is immutable.
@@ -153,7 +157,7 @@ Core invariants:
 
 See [`docs/architecture.md`](docs/architecture.md) for component and assignment sequence diagrams.
 
-The selected design is a modular monolith:
+I selected a modular-monolith design:
 
 - `cmd/api`: public REST API plus a separately bound administrative listener
 - `cmd/worker`: outbox claim, SMTP delivery, retry, and a separate administrative listener
@@ -161,12 +165,12 @@ The selected design is a modular monolith:
 - Mailpit: deterministic local SMTP sink only
 - one shared Go module and release artifact
 
-Architecture alternatives are compared in [`docs/assessment/architecture-alternatives.md`](docs/assessment/architecture-alternatives.md).
+I compare the architecture alternatives in [`docs/assessment/architecture-alternatives.md`](docs/assessment/architecture-alternatives.md).
 
 
 ### Dependency choices
 
-The Go module keeps its third-party surface narrow: pgx is the single direct Go dependency.
+I kept the Go module's third-party surface narrow: pgx is the single direct Go dependency.
 
 | Dependency | Problem solved | Why not only the Go standard library | Operational consequence | Replacement cost |
 |---|---|---|---|---|
@@ -176,7 +180,7 @@ The Go module keeps its third-party surface narrow: pgx is the single direct Go 
 | Docker Compose | Repeatable database, SMTP sink, migrations, seed, API, and worker startup | Process orchestration is outside Go’s standard library | Requires Docker for the full local path | Low; direct Go commands are documented |
 | Go standard library | HTTP, JSON, TLS, SMTP, logging, cryptography, concurrency, shutdown, and testing | It is sufficient for these boundaries | Small dependency and supply-chain surface, but more explicit code | Individual packages can be replaced behind existing boundaries if measured needs justify it |
 
-The original assessment-only `libpq` choice is retained as history in [ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) and superseded by the maintained pgx decision in [ADR 0006](docs/adr/0006-pgx-stdlib-driver.md).
+I retained the original assessment-only `libpq` choice as history in [ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) and superseded it with the maintained pgx decision in [ADR 0006](docs/adr/0006-pgx-stdlib-driver.md).
 
 ## 9. Repository map
 
@@ -247,13 +251,13 @@ Append-only per-attempt outcome (`SENT`, `RETRY_SCHEDULED`, `FAILED`, `ABANDONED
 
 Append-only replay sequence, new delivery cycle, actor ID, request ID, channel (`HTTP` or `CLI`), required reason, and database timestamp. HTTP actors are authenticated managers; CLI operator identities are self-asserted by users who already have database/config access.
 
-Database checks reinforce state/assignee consistency, lease consistency, terminal scheduling, creator immutability, completed immutability, unique notification intent, and append-only histories.
+I use database checks to reinforce state/assignee consistency, lease consistency, terminal scheduling, creator immutability, completed immutability, unique notification intent, and append-only histories.
 
 ## 11. Query and pagination behavior
 
 Work-item pages are ordered by `(created_at DESC, id DESC)`. History is ordered by event sequence ascending. Notification pages use `(created_at DESC, id DESC)`. Cursors are opaque base64url-encoded boundaries.
 
-Default-planner regression tests populate large tied-timestamp sets and require the matching unfiltered, status-filtered, and work-item-filtered indexes without sequential scans or sort nodes. The maximum page size is 100.
+I added default-planner regression tests that populate large tied-timestamp sets and require the matching unfiltered, status-filtered, and work-item-filtered indexes without sequential scans or sort nodes. I set the maximum page size to 100.
 
 Cursors provide stable normal forward traversal; they do not promise a frozen snapshot across an arbitrarily long browsing session.
 
@@ -274,7 +278,7 @@ Cursors provide stable normal forward traversal; they do not promise a frozen sn
 13. On permanent/exhausted failure, append `FAILED` and expose only a safe failure code and fixed generic message.
 14. If a worker dies while leased, another worker records `ABANDONED` after lease expiry and reclaims safely.
 
-Work-item titles are single-line values of at most 200 Unicode code points. After existing whitespace normalization, persisted title, description, assignment-reason, and notification-replay-reason fields reject U+0000 with a field-specific `400 INVALID_INPUT`; the matching OpenAPI properties exclude that code point. This is a narrow PostgreSQL text-compatibility rule, not general Unicode or control-character sanitization. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. The public 1,000-rune assignment-reason contract is not reduced to fit transport. Once connected, one sticky 1 MiB raw-transport read budget bounds all server-controlled SMTP responses and TLS records across the complete session, including STARTTLS; exceeding it is a permanent `SMTP_PROTOCOL_ERROR`.
+I enforce single-line work-item titles of at most 200 Unicode code points. After existing whitespace normalization, persisted title, description, assignment-reason, and notification-replay-reason fields reject U+0000 with a field-specific `400 INVALID_INPUT`; the matching OpenAPI properties exclude that code point. I made this a narrow PostgreSQL text-compatibility rule, not general Unicode or control-character sanitization. The full accepted title remains in the message body; long subjects are deterministically rune-truncated before MIME encoding. Before dialing, the SMTP adapter validates the effective sender/recipient display names as valid, control-free UTF-8 of at most 200 code points, safely folds variable headers, quoted-printable encodes the complete text body, and rejects any irreducible physical line above 998 octets. I do not reduce the public 1,000-rune assignment-reason contract to fit transport. Once connected, one sticky 1 MiB raw-transport read budget bounds all server-controlled SMTP responses and TLS records across the complete session, including STARTTLS; exceeding it is a permanent `SMTP_PROTOCOL_ERROR`.
 
 ## 13. Delivery guarantees and limitations
 
@@ -288,9 +292,9 @@ Work-item titles are single-line values of at most 200 Unicode code points. Afte
 - **`SENT`:** the SMTP server accepted the completed message transaction.
 - **Not guaranteed:** inbox delivery, bounce-free delivery, opens, exactly once.
 
-There is an unavoidable generic SMTP ambiguity window: the SMTP server can accept the message and the worker can crash before recording `SENT`. Lease recovery may resend the stable `Message-ID`. A provider API with an idempotency key plus delivery webhooks would reduce this risk.
+I accept an unavoidable generic SMTP ambiguity window: the SMTP server can accept the message and the worker can crash before recording `SENT`. Lease recovery may resend the stable `Message-ID`. A provider API with an idempotency key plus delivery webhooks would reduce this risk.
 
-Mailpit proves real SMTP transport behavior and local server acceptance. It does **not** prove external inbox delivery.
+I use Mailpit to prove real SMTP transport behavior and local server acceptance. It does **not** prove external inbox delivery.
 
 ## 14. Prerequisites
 
@@ -327,9 +331,9 @@ Default local endpoints:
 | Mailpit UI | `http://127.0.0.1:8025` | local mail inspection |
 | PostgreSQL | `127.0.0.1:5432` | local database |
 
-Every Compose-published port, including SMTP on 1025, is bound explicitly to IPv4 loopback. `API_PORT`, `API_ADMIN_PORT`, `WORKER_PORT`, `POSTGRES_PORT`, `SMTP_PORT`, and `MAILPIT_UI_PORT` override only their host ports.
+I bound every Compose-published port, including SMTP on 1025, explicitly to IPv4 loopback. `API_PORT`, `API_ADMIN_PORT`, `WORKER_PORT`, `POSTGRES_PORT`, `SMTP_PORT`, and `MAILPIT_UI_PORT` override only their host ports.
 
-Port 8081 is the default host API port because 8080 was occupied during initial discovery. Override with `API_PORT`.
+I selected port 8081 as the default host API port because 8080 was occupied during initial discovery. Override with `API_PORT`.
 
 Stop while preserving data:
 
@@ -344,7 +348,7 @@ make reset
 docker compose up --build -d
 ```
 
-Compose automatically runs the migration and seed one-shot services before starting API and worker.
+I configured Compose to run the migration and seed one-shot services before starting API and worker.
 
 ## 16. Direct Go run
 
@@ -380,7 +384,7 @@ Migration rollback for local development:
 go run ./cmd/migrate down 1
 ```
 
-Do not use destructive down migrations as an automatic production rollback strategy.
+I do not use destructive down migrations as an automatic production rollback strategy.
 
 ## 17. Seed identities and authentication
 
@@ -398,7 +402,7 @@ Use:
 -H 'Authorization: Bearer dev-manager-token'
 ```
 
-The database stores only token hashes. The development tokens are deliberately non-secret sample data and must never be enabled in production.
+I store only token hashes in the database. I made the development tokens deliberately non-secret sample data, and they must never be enabled in production.
 
 ## 18. Typical end-to-end walkthrough
 
@@ -500,11 +504,11 @@ curl --silent --include \
 # HTTP/1.1 403
 ```
 
-The executable version of this walkthrough is [`scripts/demo.sh`](scripts/demo.sh).
+I provide the executable version of this walkthrough in [`scripts/demo.sh`](scripts/demo.sh).
 
 ## 19. API contract and errors
 
-Public-business OpenAPI 3.1: [`api/openapi.json`](api/openapi.json). It documents only authenticated `/v1/*` routes; administrative health and metrics endpoints are intentionally outside the public contract.
+I document the public-business OpenAPI 3.1 in [`api/openapi.json`](api/openapi.json). It documents only authenticated `/v1/*` routes; I intentionally keep administrative health and metrics endpoints outside the public contract.
 
 All application errors use:
 
@@ -524,11 +528,11 @@ All application errors use:
 
 Stable codes include authentication required/unavailable, permission denied, not found, invalid input, invalid transition, assignment conflict, concurrent modification, idempotency-key reuse, assignee/reassignment errors, notification replay conflict, and `NOTIFICATION_REPLAY_LIMIT_REACHED` after delivery cycle 10.
 
-SQL, SMTP credentials, provider responses containing sensitive details, and internal stack traces are not returned to clients.
+I do not return SQL, SMTP credentials, provider responses containing sensitive details, or internal stack traces to clients.
 
 ## 20. Real SMTP provider configuration
 
-The worker uses the same SMTP adapter for Mailpit and a real provider. Do not commit credentials.
+I use the same SMTP adapter for Mailpit and a real provider. I do not commit credentials.
 
 Example production-style environment shape:
 
@@ -546,7 +550,7 @@ SMTP_TLS_INSECURE_SKIP_VERIFY=false
 SMTP_TIMEOUT=10s
 ```
 
-Production configuration rejects plaintext SMTP and TLS verification bypass. `SMTP_FROM_NAME`, including an effective name embedded in `SMTP_FROM`, must be valid UTF-8, contain no control characters, and contain at most 200 Unicode code points; invalid values stop worker configuration before dependencies or listeners. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
+I reject plaintext SMTP and TLS verification bypass in production configuration. `SMTP_FROM_NAME`, including an effective name embedded in `SMTP_FROM`, must be valid UTF-8, contain no control characters, and contain at most 200 Unicode code points; invalid values stop worker configuration before dependencies or listeners. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
 
 ## 21. Tests and verification
 
@@ -556,7 +560,7 @@ Quick local verification:
 make verify
 ```
 
-This runs formatting, module/tidy drift, vet, normal and race tests, the OpenAPI contract, the secret-pattern check, and all command builds. Database-gated tests deliberately skip when `TEST_DATABASE_URL` is absent, so this is a fast development gate rather than authoritative submission evidence.
+I use this to run formatting, module/tidy drift, vet, normal and race tests, the OpenAPI contract, the secret-pattern check, and all command builds. Database-gated tests deliberately skip when `TEST_DATABASE_URL` is absent, so I treat this as a fast development gate rather than authoritative submission evidence.
 
 To run the database suites directly against an existing PostgreSQL database:
 
@@ -565,21 +569,21 @@ export TEST_DATABASE_URL='postgres://work:work@127.0.0.1:5432/work_management?ss
 make test-db test-db-race
 ```
 
-Authoritative local verification requires Docker Engine/Compose, Go, `curl`, `jq`, `git`, `python3`, `ps`, `tar`, `file`, `diff`, `cmp`, and `golangci-lint`:
+I require the following for authoritative local verification: Docker Engine/Compose, Go, `curl`, `jq`, `git`, `python3`, `ps`, `tar`, `file`, `diff`, `cmp`, and `golangci-lint`:
 
 ```bash
 make verify-full
 ```
 
-`make verify-full` runs the static, lint, command-build, OpenAPI, secret, Dockerfile-frontend-pin, scratch-runtime-policy, rendered-Compose, and actual-image gates. The offline Dockerfile gates mutation-test frontend naming and an exact three-stage graph: one tag-and-digest-pinned Go toolchain, its internal build stage, and a final scratch runtime. The only allowed build-time network resolution is the module graph locked by `go.sum`; package-manager commands, remote `ADD`, external `COPY`, VCS fetches, and unlocked downloader inputs are rejected. Actual image layers must contain only six static repository-built commands, byte-identical tracked migrations, and the CA bundle copied from that pinned toolchain. A failure-injection gate proves `make up` resolves the API image from the rendered Compose model even when builder-specific Compose image labels are absent, then inspects it before changing either a fresh or already-running Compose project. The rendered-config gate separately requires `pull_policy: build` for the local image. Verification then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, uses the bounded repository-built numeric-loopback readiness probe for API and worker, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
+I designed `make verify-full` to run the static, lint, command-build, OpenAPI, secret, Dockerfile-frontend-pin, scratch-runtime-policy, rendered-Compose, and actual-image gates. The offline Dockerfile gates mutation-test frontend naming and an exact three-stage graph: one tag-and-digest-pinned Go toolchain, its internal build stage, and a final scratch runtime. The only allowed build-time network resolution is the module graph locked by `go.sum`; package-manager commands, remote `ADD`, external `COPY`, VCS fetches, and unlocked downloader inputs are rejected. Actual image layers must contain only six static repository-built commands, byte-identical tracked migrations, and the CA bundle copied from that pinned toolchain. A failure-injection gate proves `make up` resolves the API image from the rendered Compose model even when builder-specific Compose image labels are absent, then inspects it before changing either a fresh or already-running Compose project. The rendered-config gate separately requires `pull_policy: build` for the local image. Verification then owns one unique Compose project, asks Docker for six ephemeral IPv4-loopback ports, starts a fresh PostgreSQL instance, and runs uncached normal and race suites from `go test -json`. Any test-level skip is a failure. It builds and starts the full stack, requires successful migration and seed jobs, uses the bounded repository-built numeric-loopback readiness probe for API and worker, checks both administrative surfaces and the public-route boundary, runs the exact lifecycle/Mailpit/durable-state demo, and proves that all project-labeled containers, networks, and volumes are gone. The final cleanliness gate covers tracked and unignored files; the ignored local `bin/` build directory is intentional and is not represented as artifact-free cleanup.
 
-The same Compose authority is available without the surrounding static gates:
+I provide the same Compose authority without the surrounding static gates:
 
 ```bash
 make compose-smoke
 ```
 
-The suite protects:
+I use the suite to protect:
 
 - the complete manager/worker lifecycle, authorization and non-disclosure policy;
 - transport-invalid requests, invalid UTF-8 idempotency keys, and PostgreSQL-incompatible U+0000 text before mutation, field-specific stable errors/request IDs, ETags, replay headers, and all 11 public operations;
@@ -592,7 +596,7 @@ The suite protects:
 - the exact public OpenAPI method/path, security, response-status, persisted-text pattern, schema, and response-header contract;
 - a live current-message Mailpit acceptance increment and matching durable `SENT` attempt, without claiming external delivery.
 
-Commands and exact observed outcomes are recorded in [`docs/assessment/verification.md`](docs/assessment/verification.md). The review traceability and remaining debt are in [`docs/assessment/self-review.md`](docs/assessment/self-review.md).
+I recorded commands and exact observed outcomes in [`docs/assessment/verification.md`](docs/assessment/verification.md). The review traceability and remaining debt are in [`docs/assessment/self-review.md`](docs/assessment/self-review.md).
 
 ## 22. Operability
 
@@ -606,17 +610,17 @@ Commands and exact observed outcomes are recorded in [`docs/assessment/verificat
 - Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; each detail aggregate uses one read-only repeatable-read snapshot, and lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
-`WORKER_ID` must be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.
+I require `WORKER_ID` to be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.
 
-Detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures are in [`docs/operations.md`](docs/operations.md).
+I documented detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures in [`docs/operations.md`](docs/operations.md).
 
-HTTP metrics retain at most 1,024 distinct canonical `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
+I retain at most 1,024 distinct canonical HTTP metrics `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
 
-Mutation logs intentionally exclude bearer tokens, idempotency keys, email/display names, titles, descriptions, assignment/replay reasons, request and notification payloads, and raw provider/SMTP/SQL errors. The generic `http request` access record remains separate. Work-item history is durable but has no request-ID column, so do not treat it as a replacement for live request/mutation log correlation.
+I intentionally exclude bearer tokens, idempotency keys, email/display names, titles, descriptions, assignment/replay reasons, request and notification payloads, and raw provider/SMTP/SQL errors. The generic `http request` access record remains separate. Work-item history is durable but has no request-ID column, so do not treat it as a replacement for live request/mutation log correlation.
 
 ## 23. Security considerations
 
-Implemented:
+I implemented:
 
 - production API startup rejects the development-only authentication mode;
 - every production command requires PostgreSQL `sslmode=verify-full`;
@@ -637,7 +641,7 @@ Implemented:
 - finite HTTP metric method/route labels and a fixed retained-series cap;
 - secret-pattern check.
 
-Dependabot's monthly Docker checks cover `FROM` images, not the parser-frontend comment. The maintainer must review the syntax frontend separately and keep it tag-plus-digest pinned. Refresh it deliberately:
+Dependabot's monthly Docker checks cover `FROM` images, not the parser-frontend comment. I require the maintainer to review the syntax frontend separately and keep it tag-plus-digest pinned. I refresh it deliberately:
 
 ```bash
 candidate='sha256:<reviewed-candidate-index-digest>'
@@ -647,11 +651,11 @@ docker buildx imagetools inspect --raw "docker/dockerfile:1.7@$candidate" |
   jq -e '.manifests | type == "array" and length > 0 and all(.[]; .digest | startswith("sha256:"))'
 ```
 
-Review the returned platform manifest set, update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test runtime-dockerfile-test docker-build`. Never replace the digest with a mutable tag-only directive or add package-manager, unlocked downloader, or VCS resolution to the build; the sole allowed network resolution is the `go.sum`-locked module graph.
+I review the returned platform manifest set and update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test runtime-dockerfile-test docker-build`. Never replace the digest with a mutable tag-only directive or add package-manager, unlocked downloader, or VCS resolution to the build; the sole allowed network resolution is the `go.sum`-locked module graph.
 
-A verified builder tag/digest refresh must update the matching exact instruction in `scripts/check-runtime-dockerfile.sh` in the same change; the mutation and actual-image gates then prove the intended graph and payload again.
+I require a verified builder tag/digest refresh to update the matching exact instruction in `scripts/check-runtime-dockerfile.sh` in the same change; the mutation and actual-image gates then prove the intended graph and payload again.
 
-Before production:
+Before production, I would add:
 
 - external OIDC/JWT verification;
 - secret manager and rotation;
@@ -664,18 +668,20 @@ Before production:
 
 ## 24. Known limitations and accepted debt
 
-- The API intentionally cannot start in `APP_ENV=production` until a production authenticator replaces the development token adapter.
-- SMTP exactly-once delivery is impossible with this generic interface.
-- No bounce/delivery/open webhooks.
-- Replay attribution is immutable, but CLI operator identity is self-asserted by a user with database/config access rather than independently authenticated.
-- No general edit or administrative correction workflow.
-- Reassignment is rejected after work starts.
-- No cancel, delete, unassign, reopen, or retention/archive process.
-- No tenant/team dimension.
-- The process metrics registry is in-memory; counters reset on process restart.
-- Worker throughput is sequential per process; horizontal workers are supported.
-- Operational endpoints are unauthenticated and rely on network isolation; loopback defaults protect local execution but are not a production authorization mechanism.
-- No load/soak test has established production capacity.
+I accepted the following limitations and debt:
+
+- I intentionally prevent the API from starting in `APP_ENV=production` until a production authenticator replaces the development token adapter.
+- I cannot provide SMTP exactly-once delivery with this generic interface.
+- I did not implement bounce, delivery, or open webhooks.
+- I made replay attribution immutable, but CLI operator identity is self-asserted by a user with database/config access rather than independently authenticated.
+- I did not implement a general edit or administrative correction workflow.
+- I reject reassignment after work starts.
+- I did not implement a cancel, delete, unassign, reopen, or retention/archive process.
+- I did not add a tenant/team dimension.
+- I kept the process metrics registry in-memory, so counters reset on process restart.
+- I kept worker throughput sequential per process, while supporting horizontal workers.
+- I left operational endpoints unauthenticated and reliant on network isolation; loopback defaults protect local execution but are not a production authorization mechanism.
+- I have not established production capacity with a load or soak test.
 
 ## 25. Architecture Decision Records
 
@@ -699,7 +705,7 @@ The highest-leverage choices were a modular monolith, PostgreSQL, a transactiona
 
 ### 3. How did you approach assignment, notification delivery, and traceability?
 
-Assignment is one explicit transaction containing the conditional item update, assignment event, and unique outbox row. The worker handles only committed rows. Every claim outcome is immutable and failed work remains queryable. The API exposes current delivery state and attempt history. This guarantees durable intent and honest at-least-once processing without claiming inbox delivery or exactly once.
+I designed assignment as one explicit transaction containing the conditional item update, assignment event, and unique outbox row. The worker handles only committed rows. Every claim outcome is immutable and failed work remains queryable. The API exposes current delivery state and attempt history. This guarantees durable intent and honest at-least-once processing without claiming inbox delivery or exactly once.
 
 ### 4. Where will this design fail first under growth, load, or team scale, and how would you address it?
 
@@ -711,20 +717,20 @@ I deferred production identity, tenancy, cancellation/reopen, mid-progress reass
 
 ### 6. What would you put in place before production?
 
-Externally verified OIDC/JWT, secret management, TLS PostgreSQL/SMTP, HA database and tested restores, backward-compatible migration policy, RED and queue dashboards, agreed SLOs/alerts, distributed tracing, rate limits, threat modeling, dependency/SBOM scanning, signed builds, load/failure testing, runbooks, on-call ownership, incident exercises, provider idempotency/webhooks, and privacy/retention policy.
+I would add externally verified OIDC/JWT, secret management, TLS PostgreSQL/SMTP, an HA database and tested restores, a backward-compatible migration policy, RED and queue dashboards, agreed SLOs/alerts, distributed tracing, rate limits, threat modeling, dependency/SBOM scanning, signed builds, load/failure testing, runbooks, on-call ownership, incident exercises, provider idempotency/webhooks, and a privacy/retention policy.
 
 ### 7. How would you evolve for audit history, webhooks, or multi-team usage?
 
-For audit, extend the immutable replay ledger to other operator/configuration events and define retention and export policy. For webhooks, add subscriptions, signing secrets, a separate transactional webhook outbox, delivery attempts, replay, endpoint disablement, and ordering/version semantics. For multi-team, add `team_id` to every ownership and idempotency boundary, backfill safely, scope every index/query, derive team from trusted identity, consider RLS as defense in depth, and test cross-tenant non-disclosure.
+For audit, I would extend the immutable replay ledger to other operator/configuration events and define retention and export policy. For webhooks, I would add subscriptions, signing secrets, a separate transactional webhook outbox, delivery attempts, replay, endpoint disablement, and ordering/version semantics. For multi-team, I would add `team_id` to every ownership and idempotency boundary, backfill safely, scope every index/query, derive team from trusted identity, consider RLS as defense in depth, and test cross-tenant non-disclosure.
 
 ### 8. How would you onboard another engineer?
 
-Start with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs. Run the domain tests, then the PostgreSQL integration flow, inspect one assignment transaction and one notification claim, execute the demo, and practice a failed-notification replay. The new owner should then make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
+I would onboard another engineer with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs. I would have them run the domain tests, then the PostgreSQL integration flow, inspect one assignment transaction and one notification claim, execute the demo, and practice a failed-notification replay. I would then ask the new owner to make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
 
 ## 27. AI usage disclosure
 
-OpenAI AI coding assistants were used to help structure the ambiguity analysis and implementation plan; draft and revise Go, SQL, tests, OpenAPI, Compose/CI configuration, diagrams, and documentation; enumerate failure and security cases; and compare implementation behavior with the written contract.
+I used OpenAI AI coding assistants to help me structure the ambiguity analysis and implementation plan; draft and revise Go, SQL, tests, OpenAPI, Compose/CI configuration, diagrams, and documentation; enumerate failure and security cases; and compare implementation behavior with the written contract.
 
-AI output was treated as a draft, not as verification. Defects and unsupported assumptions found by tests and review were corrected in the repository. The executable gates, deliberate negative cases, and exact observed outcomes are recorded in [`docs/assessment/verification.md`](docs/assessment/verification.md), while [`docs/assessment/self-review.md`](docs/assessment/self-review.md) maps requirements to implementation and evidence.
+I treated AI output as a draft, not as verification. I corrected defects and unsupported assumptions that tests and review found in the repository. I recorded the executable gates, deliberate negative cases, and exact observed outcomes in [`docs/assessment/verification.md`](docs/assessment/verification.md), while [`docs/assessment/self-review.md`](docs/assessment/self-review.md) maps requirements to implementation and evidence.
 
-The submitter remains responsible for the final architecture, trade-offs, source, and claims, and should be able to explain and defend every included decision during the technical debrief.
+I remain responsible for the final architecture, trade-offs, source, and claims, and I can explain and defend every included decision during the technical debrief.
