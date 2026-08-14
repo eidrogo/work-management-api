@@ -5,7 +5,7 @@
 
 ## Goal
 
-Keep the documentation personal without starting most author-owned statements with `I`. The current 18 Markdown files contain 332 lines with first-person singular terms; the rewrite should make that voice occasional rather than dominant.
+Keep the documentation personal without starting most author-owned statements with `I`. The approved baseline is 332 matching lines with first-person singular terms; the rewrite should make that voice occasional rather than dominant.
 
 ## Chosen approach
 

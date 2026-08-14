@@ -725,7 +725,7 @@ Audit: extend the immutable replay ledger to other operator/configuration events
 
 ### 8. How would you onboard another engineer?
 
-I would onboard another engineer with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs; have them run the domain tests, PostgreSQL integration flow, one assignment transaction and notification claim, the demo, and a failed-notification replay; then ask the new owner to make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
+I would onboard another engineer with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs; have them run the domain tests, then the PostgreSQL integration flow, inspect one assignment transaction and one notification claim, execute the demo, and practice a failed-notification replay; then ask the new owner to make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
 
 ## 27. AI usage disclosure
 
