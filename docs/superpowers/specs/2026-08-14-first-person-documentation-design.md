@@ -1,7 +1,7 @@
 # First-Person Documentation Design
 
 **Date:** 2026-08-14
-**Status:** Approved for planning
+**Status:** Implemented
 
 ## Goal
 
