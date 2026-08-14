@@ -41,7 +41,7 @@ I use `(created_at DESC, id DESC)` boundaries for work and notification lists an
 
 ## 7:15–8:15 — Observability and administrative behavior
 
-I expose liveness, database readiness, and Prometheus text metrics from both processes on admin listeners. I close HTTP method/route labels, cap retained `(method, route, status)` keys at 1,024, and increment a label-free drop counter for rejected keys. I use a five-second last-good cache for notification backlog queries: one refresh proceeds, concurrent scrapes receive completed state, and failures retain gauges while setting an explicit scrape-error metric. I accept that counters are process-local and reset on restart.
+Both processes expose liveness, database readiness, and Prometheus text metrics on admin listeners. HTTP method/route labels are closed, retained `(method, route, status)` keys are capped at 1,024, and rejected keys increment a label-free drop counter. Notification backlog queries use a five-second last-good cache: one refresh proceeds, concurrent scrapes receive completed state, and failures retain gauges while setting an explicit scrape-error metric. Counters are process-local and reset on restart.
 
 ## 8:15–9:15 — Failure scenarios, trade-offs, and debt
 

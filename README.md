@@ -384,7 +384,7 @@ Migration rollback for local development:
 go run ./cmd/migrate down 1
 ```
 
-I do not use destructive down migrations as an automatic production rollback strategy.
+I would not use destructive down migrations as an automatic production rollback strategy.
 
 ## 17. Seed identities and authentication
 
@@ -402,7 +402,7 @@ Use:
 -H 'Authorization: Bearer dev-manager-token'
 ```
 
-I store only token hashes in the database. I made the development tokens deliberately non-secret sample data, and they must never be enabled in production.
+The database stores only token hashes. I deliberately made the development tokens non-secret sample data, and they must never be enabled in production.
 
 ## 18. Typical end-to-end walkthrough
 
@@ -532,7 +532,7 @@ I do not return SQL, SMTP credentials, provider responses containing sensitive d
 
 ## 20. Real SMTP provider configuration
 
-I use the same SMTP adapter for Mailpit and a real provider. I do not commit credentials.
+The worker uses the same SMTP adapter for Mailpit and a real provider. Do not commit credentials.
 
 Example production-style environment shape:
 
@@ -550,7 +550,7 @@ SMTP_TLS_INSECURE_SKIP_VERIFY=false
 SMTP_TIMEOUT=10s
 ```
 
-I reject plaintext SMTP and TLS verification bypass in production configuration. `SMTP_FROM_NAME`, including an effective name embedded in `SMTP_FROM`, must be valid UTF-8, contain no control characters, and contain at most 200 Unicode code points; invalid values stop worker configuration before dependencies or listeners. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
+Production configuration rejects plaintext SMTP and TLS verification bypass. `SMTP_FROM_NAME`, including an effective name embedded in `SMTP_FROM`, must be valid UTF-8, contain no control characters, and contain at most 200 Unicode code points; invalid values stop worker configuration before dependencies or listeners. It also requires PostgreSQL `sslmode=verify-full`. The API rejects `APP_ENV=production` while the development token authenticator is selected, so production cannot accidentally launch with seeded credentials.
 
 ## 21. Tests and verification
 
@@ -610,11 +610,11 @@ I recorded commands and exact observed outcomes in [`docs/assessment/verificatio
 - Manager notification list/get includes attempts, replay history, safe failure fields, lease owner/expiry, schedule, and sent timestamps; each detail aggregate uses one read-only repeatable-read snapshot, and lease tokens remain internal
 - CLI replay: `go run ./cmd/replay-notification <notification-uuid> <operator-identity> <reason>`
 
-I require `WORKER_ID` to be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.
+`WORKER_ID` must be valid UTF-8, trimmed nonblank, at most 255 Unicode code points, and free of control characters. Configured violations stop startup before database/listener readiness; the generated hostname/PID form is sanitized and rune-truncated to the same persisted contract. Worker construction and claim storage validate it again below configuration.
 
 I documented detailed failure modes, alert candidates, SLO candidates, backup/restore, migration, rollback, and replay procedures in [`docs/operations.md`](docs/operations.md).
 
-I retain at most 1,024 distinct canonical HTTP metrics `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
+HTTP metrics retain at most 1,024 distinct canonical `(method, route, status)` keys. New keys beyond that cap increment label-free `work_management_http_series_dropped_total` and are forgotten. Notification backlog metrics use a five-second per-process cache: one scrape refreshes while concurrent scrapes receive the previous completed state. Refresh failures retain the last good gauges and set `work_management_metrics_scrape_error`.
 
 I intentionally exclude bearer tokens, idempotency keys, email/display names, titles, descriptions, assignment/replay reasons, request and notification payloads, and raw provider/SMTP/SQL errors. The generic `http request` access record remains separate. Work-item history is durable but has no request-ID column, so do not treat it as a replacement for live request/mutation log correlation.
 
@@ -641,7 +641,7 @@ I implemented:
 - finite HTTP metric method/route labels and a fixed retained-series cap;
 - secret-pattern check.
 
-Dependabot's monthly Docker checks cover `FROM` images, not the parser-frontend comment. I require the maintainer to review the syntax frontend separately and keep it tag-plus-digest pinned. I refresh it deliberately:
+Dependabot's monthly Docker checks cover `FROM` images, not the parser-frontend comment. The maintainer must review the syntax frontend separately and keep it tag-plus-digest pinned. For a refresh, I would:
 
 ```bash
 candidate='sha256:<reviewed-candidate-index-digest>'
@@ -651,9 +651,9 @@ docker buildx imagetools inspect --raw "docker/dockerfile:1.7@$candidate" |
   jq -e '.manifests | type == "array" and length > 0 and all(.[]; .digest | startswith("sha256:"))'
 ```
 
-I review the returned platform manifest set and update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test runtime-dockerfile-test docker-build`. Never replace the digest with a mutable tag-only directive or add package-manager, unlocked downloader, or VCS resolution to the build; the sole allowed network resolution is the `go.sum`-locked module graph.
+For a refresh, I would review the returned platform manifest set, update the canonical line in `Dockerfile`, `scripts/check-dockerfile-syntax.sh`, and `scripts/test-dockerfile-syntax-check.sh` together, then run `make dockerfile-syntax-test runtime-dockerfile-test docker-build`. Never replace the digest with a mutable tag-only directive or add package-manager, unlocked downloader, or VCS resolution to the build; the sole allowed network resolution is the `go.sum`-locked module graph.
 
-I require a verified builder tag/digest refresh to update the matching exact instruction in `scripts/check-runtime-dockerfile.sh` in the same change; the mutation and actual-image gates then prove the intended graph and payload again.
+A verified builder tag/digest refresh must update the matching exact instruction in `scripts/check-runtime-dockerfile.sh` in the same change; the mutation and actual-image gates then prove the intended graph and payload again.
 
 Before production, I would add:
 
