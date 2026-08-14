@@ -5,15 +5,15 @@
 
 ## Context
 
-I originally served unauthenticated health and metrics endpoints on the same listener as authenticated business traffic, which made accidental public exposure easy. I also accepted caller-controlled method and route values for HTTP metric labels; duration samples omitted status and could produce duplicate series identifiers, and every metrics scrape queried PostgreSQL for notification backlog state.
+The API originally served unauthenticated health and metrics endpoints on the same listener as authenticated business traffic. That made accidental public exposure easy. HTTP metric labels also accepted caller-controlled method and route values, duration samples omitted status and could produce duplicate series identifiers, and every metrics scrape queried PostgreSQL for notification backlog state.
 
 ## Decision
 
 I chose to run the API's business and operational surfaces on separate listeners. `HTTP_ADDR` remains the public business listener and `API_ADMIN_ADDR` is the API administrative listener, with a direct-run default of `127.0.0.1:9090`. The worker administrative listener defaults to `127.0.0.1:9091`. I keep administrative endpoints unauthenticated and rely on the network boundary. I made Docker Compose bind the in-container administrative listeners to `:9090` and `:9091`, while every published host port binds explicitly to IPv4 loopback. I exclude operational endpoints from the public OpenAPI contract.
 
-I restrict HTTP method labels to `GET`, `POST`, `PUT`, or `OTHER`, and route labels to the ten business templates plus `/unknown`. I retain at most 1,024 distinct `(method, route, status)` keys. I continue updating retained keys, drop new keys beyond the cap, and increment label-free `work_management_http_series_dropped_total`. I include status on both request-count and duration samples and render every map-backed family deterministically.
+I implemented HTTP metrics that restrict method labels to `GET`, `POST`, `PUT`, or `OTHER`, and route labels to the ten business templates plus `/unknown`. Each process retains at most 1,024 distinct `(method, route, status)` keys. The metrics implementation continues updating retained keys, drops new keys beyond the cap, and increments label-free `work_management_http_series_dropped_total`. It includes status on both request-count and duration samples and renders every map-backed family deterministically.
 
-I cache notification backlog values for five seconds per process. One expired scrape refreshes synchronously; concurrent scrapes serve the last completed state without waiting. A failed refresh retains the last good value, throttles retries for five seconds, and sets `work_management_metrics_scrape_error` until a later refresh succeeds.
+I implemented a five-second per-process cache for notification backlog gauges. One expired scrape refreshes synchronously; concurrent scrapes serve the last completed state without waiting. A failed refresh retains the last good value, throttles retries for five seconds, and sets `work_management_metrics_scrape_error` until a later refresh succeeds.
 
 ## Alternatives considered
 
@@ -24,7 +24,7 @@ I cache notification backlog values for five seconds per process. One expired sc
 
 ## Consequences
 
-I accepted another API port and made the API pre-bind, serve, and drain two servers under one lifecycle. I require deployments outside local loopback to use private-network policy or an authenticated operational proxy. I accepted that backlog gauges may be five seconds stale during healthy operation and indefinitely stale across refresh failures, while the error gauge makes that explicit. Process-local counters reset on restart. Rejected HTTP label keys are never retained.
+I accepted another API port and made the API pre-bind, serve, and drain two servers under one lifecycle. Deployments outside local loopback still require private-network policy or an authenticated operational proxy. I accepted that backlog gauges may be five seconds stale during healthy operation and indefinitely stale across refresh failures, while the error gauge makes that explicit. Process-local counters reset on restart. Rejected HTTP label keys are never retained.
 
 ## Operational impact
 

@@ -98,7 +98,7 @@ sequenceDiagram
 
 I designed assignment not to wait for SMTP: the item update, event, and initial outbox row either commit together or all roll back. I made the adapter build the complete MIME payload before opening a connection, fold variable headers at structured boundaries, quoted-printable encode the full body, and enforce the 998-octet physical-line ceiling. I use one sticky 1 MiB raw-transport read budget to bound the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. I define `SENT` as the configured SMTP server accepting the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`; I therefore intentionally accept generic SMTP's at-least-once behavior.
 
-I persist or return only an allowlisted failure code and fixed generic message. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
+The application persists or returns only an allowlisted failure code and fixed generic message. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
 
 ## Idempotency and concurrency ownership
 
