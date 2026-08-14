@@ -27,4 +27,4 @@ I would patch the base image when PostgreSQL client libraries receive security u
 
 ## Revisit when
 
-This historical decision was revisited by replacing the adapter with a maintained pinned driver and rerunning transaction, cancellation, pool, and concurrency tests; see [ADR 0006](0006-pgx-stdlib-driver.md).
+This historical decision was revisited by replacing the adapter with a maintained pinned driver and rerunning transaction, cancellation, pool, and concurrency tests; see ADR 0006.
