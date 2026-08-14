@@ -5,26 +5,26 @@
 
 ## Context
 
-Authentication exists outside the business system, but local reviewers need a credible boundary and future transports must not bypass policy.
+I kept authentication outside the business system, but I needed a credible boundary for local reviewers and policy that future transports cannot bypass.
 
 ## Decision
 
-Resolve opaque development bearer tokens to immutable principals. Store only token hashes. Enforce manager/worker and ownership policy in application services below HTTP handlers.
+I chose to resolve opaque development bearer tokens to immutable principals, store only token hashes, and enforce manager/worker and ownership policy in application services below HTTP handlers.
 
 ## Alternatives considered
 
-- Caller-controlled identity headers: unsafe trust boundary.
-- Issuing JWTs locally: builds an identity platform outside scope.
-- Handler-only authorization: another transport could bypass it.
+- I rejected caller-controlled identity headers because they create an unsafe trust boundary.
+- I rejected issuing JWTs locally because that builds an identity platform outside scope.
+- I rejected handler-only authorization because another transport could bypass it.
 
 ## Consequences
 
-Development tokens are intentionally non-production. OIDC/JWT verification can replace the authenticator without moving business policy.
+I accepted development tokens as intentionally non-production. I can replace the authenticator with OIDC/JWT verification without moving business policy.
 
 ## Operational impact
 
-Count authentication and authorization failures without logging credentials. Production must validate issuer, audience, signature, expiry, and key rotation.
+I count authentication and authorization failures without logging credentials. In production, I will validate issuer, audience, signature, expiry, and key rotation.
 
 ## Revisit when
 
-Roles become fine-grained permissions or multi-team isolation introduces tenant claims and optional row-level security.
+I will revisit this when roles become fine-grained permissions or multi-team isolation introduces tenant claims and optional row-level security.

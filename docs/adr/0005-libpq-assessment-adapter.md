@@ -5,26 +5,26 @@
 
 ## Context
 
-The construction environment exposed Go and `libpq`, but module-proxy access was not reliable. The implementation still needed real PostgreSQL transactions and `SKIP LOCKED` semantics.
+The construction environment exposed Go and `libpq`, but module-proxy access was not reliable. I still needed real PostgreSQL transactions and `SKIP LOCKED` semantics; this historical decision is superseded by ADR 0006.
 
 ## Decision
 
-Use a narrow cgo `database/sql/driver` over the public `libpq` C API. Keep SQL and application code on standard `database/sql` boundaries.
+I chose a narrow cgo `database/sql/driver` over the public `libpq` C API. I kept SQL and application code on standard `database/sql` boundaries.
 
 ## Alternatives considered
 
-- pgx: preferred normally, but unavailable during construction.
-- SQLite/in-memory: would not demonstrate PostgreSQL semantics.
-- Vendoring a partial third-party driver: larger review and supply-chain risk.
+- I rejected pgx, although I preferred it normally, because it was unavailable during construction.
+- I rejected SQLite/in-memory because it would not demonstrate PostgreSQL semantics.
+- I rejected vendoring a partial third-party driver because of the larger review and supply-chain risk.
 
 ## Consequences
 
-Builds require cgo, `pkg-config`, and `libpq` headers/runtime. The adapter is smaller than a mature driver and increases maintenance burden.
+I accepted that builds require cgo, `pkg-config`, and `libpq` headers/runtime. I accepted that the adapter is smaller than a mature driver and increases maintenance burden.
 
 ## Operational impact
 
-Patch the base image when PostgreSQL client libraries receive security updates. CI must compile with cgo and run PostgreSQL integration tests.
+I would patch the base image when PostgreSQL client libraries receive security updates. I would make CI compile with cgo and run PostgreSQL integration tests.
 
 ## Revisit when
 
-Before production, replace the adapter with a maintained pinned driver and rerun transaction, cancellation, pool, and concurrency tests.
+I will revisit this historical decision by replacing the adapter with a maintained pinned driver before production and rerunning transaction, cancellation, pool, and concurrency tests.

@@ -5,27 +5,27 @@
 
 ## Context
 
-Work should move forward, concurrent commands must not overwrite each other, and browsing must remain practical as volume grows.
+I needed work to move forward, concurrent commands not to overwrite each other, and browsing to remain practical as volume grows.
 
 ## Decision
 
-Use `UNASSIGNED → ASSIGNED → IN_PROGRESS → COMPLETED`. Allow reassignment only while `ASSIGNED`, requiring a reason. Use version-conditional updates exposed as ETags. Use keyset cursors over `(created_at, id)` and event sequence.
+I chose `UNASSIGNED → ASSIGNED → IN_PROGRESS → COMPLETED`. I allow reassignment only while `ASSIGNED`, requiring a reason. I use version-conditional updates exposed as ETags and keyset cursors over `(created_at, id)` and event sequence.
 
 ## Alternatives considered
 
-- Last-write-wins: silently loses intent.
-- Broad pessimistic locks: increases contention and hides client staleness.
-- Offset pagination: degrades and shifts under concurrent inserts.
-- Configurable workflows: unjustified complexity.
+- I rejected last-write-wins because it silently loses intent.
+- I rejected broad pessimistic locks because they increase contention and hide client staleness.
+- I rejected offset pagination because it degrades and shifts under concurrent inserts.
+- I rejected configurable workflows because they add unjustified complexity.
 
 ## Consequences
 
-Stale commands produce explicit conflicts. Cursor traversal is forward-only. Administrative recovery commands must be designed explicitly later.
+I accepted explicit conflicts for stale commands and forward-only cursor traversal. I will design administrative recovery commands explicitly later.
 
 ## Operational impact
 
-Monitor conflict rate and list-query latency. Indexes support manager, worker queue, history, and notification access paths.
+I will monitor conflict rate and list-query latency. I use indexes to support manager, worker queue, history, and notification access paths.
 
 ## Revisit when
 
-Measured contention or approved cancellation/reopen requirements change the lifecycle economics.
+I will revisit this when measured contention or approved cancellation/reopen requirements change the lifecycle economics.

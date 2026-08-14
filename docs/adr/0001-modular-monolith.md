@@ -5,36 +5,36 @@
 
 ## Context
 
-The system needs one transactional source of truth, an HTTP API, asynchronous email delivery, a small current team, and a credible path to higher volume and more engineers. The assessment does not require independent business domains or separate team ownership.
+I needed one transactional source of truth, an HTTP API, asynchronous email delivery, support for a small current team, and a credible path to higher volume and more engineers. I did not need independent business domains or separate team ownership for this assessment.
 
 ## Decision
 
-Use one Go module and one PostgreSQL schema. Build separate `cmd/api` and `cmd/worker` processes that share domain, persistence, configuration, logging, and notification code. Package boundaries follow business capabilities rather than technical layers alone.
+I chose one Go module and one PostgreSQL schema. I built separate `cmd/api` and `cmd/worker` processes that share domain, persistence, configuration, logging, and notification code. I made package boundaries follow business capabilities rather than technical layers alone.
 
 ## Alternatives considered
 
-1. **One API process with an in-process goroutine.** Simpler deployment, but notification availability and scaling would be coupled to API replicas. Process restarts could complicate graceful delivery.
-2. **Independent work-item and notification microservices.** Allows independent ownership and scaling, but introduces network contracts, distributed tracing, deployment coordination, and a distributed consistency problem for assignment/outbox creation.
-3. **Serverless functions.** Reduces server management but complicates local parity, long-lived worker polling, and transaction ownership.
+1. **One API process with an in-process goroutine.** I rejected this simpler deployment because notification availability and scaling would be coupled to API replicas, and process restarts could complicate graceful delivery.
+2. **Independent work-item and notification microservices.** I rejected this because, although it allows independent ownership and scaling, it introduces network contracts, distributed tracing, deployment coordination, and a distributed consistency problem for assignment/outbox creation.
+3. **Serverless functions.** I rejected this because it reduces server management but complicates local parity, long-lived worker polling, and transaction ownership.
 
 ## Consequences
 
-- Assignment update, history, and outbox insertion remain one local database transaction.
-- API and worker can scale and deploy independently within one release.
-- Shared code reduces semantic drift.
-- A bad shared release may affect both processes.
-- PostgreSQL remains a shared scaling and failure boundary.
+- I accepted that assignment update, history, and outbox insertion remain one local database transaction.
+- I accepted that the API and worker can scale and deploy independently within one release.
+- I accepted shared code to reduce semantic drift.
+- I accepted that a bad shared release may affect both processes.
+- I accepted PostgreSQL as a shared scaling and failure boundary.
 
 ## Operational impact
 
-Operate two long-running processes, three listeners (API public, API admin, and worker admin), two unauthenticated administrative surfaces, and one database. The administrative listeners require a private network boundary. Rollouts should preserve schema compatibility with both current and previous API/worker versions.
+I will operate two long-running processes, three listeners (API public, API admin, and worker admin), two unauthenticated administrative surfaces, and one database. I require a private network boundary for the administrative listeners. I will preserve schema compatibility with both current and previous API/worker versions during rollouts.
 
 ## Revisit when
 
-- Separate teams own the capabilities and need independent release contracts.
-- Worker load materially harms API database performance despite tuning.
-- Regulatory or blast-radius requirements demand isolation.
-- A broker or provider-specific service becomes a distinct platform capability.
+- I will revisit this when separate teams own the capabilities and need independent release contracts.
+- I will revisit this when worker load materially harms API database performance despite tuning.
+- I will revisit this when regulatory or blast-radius requirements demand isolation.
+- I will revisit this when a broker or provider-specific service becomes a distinct platform capability.
 
 ## Related decisions
 
