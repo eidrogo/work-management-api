@@ -47,7 +47,7 @@ flowchart LR
     Worker --> Ops
 ```
 
-Independently runnable API and worker processes share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both API servers drain concurrently under one shutdown budget. A worker signal separately stops new claims, drains its active SMTP/database attempt while shutting down the admin listener, and force-cancels only after that budget; both goroutines are reaped before database close or return.
+I chose independently runnable API and worker processes that share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both API servers drain concurrently under one shutdown budget. A worker signal separately stops new claims, drains its active SMTP/database attempt while shutting down the admin listener, and force-cancels only after that budget; both goroutines are reaped before database close or return.
 
 The two administrative listeners default to loopback during direct execution. Compose containers use wildcard binds so forwarding works, while every host port is published explicitly on `127.0.0.1`. Administrative health and metrics routes remain unauthenticated and absent from the public OpenAPI document; they need a private network boundary outside local development.
 
@@ -96,7 +96,7 @@ sequenceDiagram
     end
 ```
 
-Assignment does not wait for SMTP: the item update, event, and initial outbox row either commit together or all roll back. The adapter builds the complete MIME payload before opening a connection, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. One sticky 1 MiB raw-transport read budget bounds the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`; generic SMTP therefore remains at least once.
+I designed assignment not to wait for SMTP: the item update, event, and initial outbox row either commit together or all roll back. The adapter builds the complete MIME payload before opening a connection, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. One sticky 1 MiB raw-transport read budget bounds the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, the application's at-least-once delivery design can resend the stable `Message-ID`; I intentionally accept that generic SMTP cannot provide exactly-once delivery.
 
 The application persists or returns only an allowlisted failure code and fixed generic message. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
 

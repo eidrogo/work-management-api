@@ -4,7 +4,7 @@ I use this guide as a speaking outline, not a claim of production readiness. I r
 
 ## 0:00–0:45 — Scenario, scope, and non-goals
 
-This service is an operational ownership ledger. Managers create and route work; workers see and advance only work currently assigned to them. The assessment focuses on trusted identity boundaries, durable state, concurrency, traceability, and failure visibility. It deliberately defers production identity issuance, tenancy, general editing, cancellation/reopen, cloud deployment, and provider delivery webhooks.
+I designed this service as an operational ownership ledger, focusing the assessment on trusted identity boundaries, durable state, concurrency, traceability, and failure visibility. Managers create and route work; workers see and advance only work currently assigned to them. I deliberately deferred production identity issuance, tenancy, general editing, cancellation/reopen, cloud deployment, and provider delivery webhooks.
 
 ## 0:45–1:45 — Lifecycle and authorization
 
@@ -17,7 +17,7 @@ Managers can create, list, read, assign/reassign, inspect history, and inspect/r
 
 ## 1:45–2:30 — Modular monolith and listener boundaries
 
-One Go module and PostgreSQL schema produce separate API and worker processes. This keeps assignment, history, and outbox creation in one transaction without a distributed dual write while allowing worker scaling independent of API request handling. The API has an authenticated public listener and a separately bound admin listener; the worker has its own admin listener. Health and metrics remain unauthenticated, excluded from OpenAPI, published to loopback in Compose, and protected by a private production ingress requirement.
+I chose one Go module and PostgreSQL schema to produce separate API and worker processes. This keeps assignment, history, and outbox creation in one transaction without a distributed dual write while allowing worker scaling independent of API request handling. The API has an authenticated public listener and a separately bound admin listener; the worker has its own admin listener. Health and metrics remain unauthenticated, excluded from OpenAPI, published to loopback in Compose, and protected by a private production ingress requirement.
 
 ## 2:30–3:30 — Atomic assignment, event, and outbox
 

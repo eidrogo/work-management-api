@@ -1,8 +1,8 @@
 # Work Management API
 
-This greenfield Go backend is the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email intent is durable before a worker submits the message to the configured SMTP server. SMTP acceptance is not proof of external inbox delivery.
+I built this greenfield Go backend as the source of truth for operational work: managers create and assign work, workers see and advance only their own queue, every successful mutation is traceable, and assignment email intent is durable before a worker submits the message to the configured SMTP server. SMTP acceptance is not proof of external inbox delivery.
 
-This is an assessment implementation, not a claim of production readiness. It concentrates on correctness, explicit invariants, transaction boundaries, failure visibility, operability, and a credible evolution path.
+This is an assessment implementation, not a claim of production readiness; I intentionally concentrated on correctness, explicit invariants, transaction boundaries, failure visibility, operability, and a credible evolution path.
 
 ## 1. Purpose
 
@@ -47,7 +47,7 @@ Explicitly excluded: frontend, signup, passwords, account management, production
 
 ## 3. Scenario interpretation
 
-The smallest coherent interpretation is a manager-defined, worker-executed forward workflow:
+I interpreted the smallest coherent system as a manager-defined, worker-executed forward workflow:
 
 ```text
 UNASSIGNED -> ASSIGNED -> IN_PROGRESS -> COMPLETED
@@ -55,7 +55,7 @@ UNASSIGNED -> ASSIGNED -> IN_PROGRESS -> COMPLETED
 
 Managers define ownership and see the whole workload, but never advance worker progress. Workers read and mutate only work currently assigned to them. Work may begin without an assignee. Once completed, it is immutable in v1.
 
-Reassignment is allowed only while `ASSIGNED`: it keeps the item in `ASSIGNED`, requires a reason, appends a new event, and sends the new assignee a new email. Active-work reassignment is excluded in this version because silently transferring in-flight responsibility has materially different business semantics.
+I allow reassignment only while `ASSIGNED`: it keeps the item in `ASSIGNED`, requires a reason, appends a new event, and sends the new assignee a new email; I exclude active-work reassignment in this version because silently transferring in-flight responsibility has materially different business semantics.
 
 The full ambiguity analysis is in [`docs/assessment/ambiguities.md`](docs/assessment/ambiguities.md).
 
@@ -157,7 +157,7 @@ Core invariants:
 
 See [`docs/architecture.md`](docs/architecture.md) for component and assignment sequence diagrams.
 
-The architecture uses a modular monolith:
+I selected a modular-monolith design:
 
 - `cmd/api`: public REST API plus a separately bound administrative listener
 - `cmd/worker`: outbox claim, SMTP delivery, retry, and a separate administrative listener
@@ -180,7 +180,7 @@ The Go module's third-party surface is narrow: pgx is the single direct Go depen
 | Docker Compose | Repeatable database, SMTP sink, migrations, seed, API, and worker startup | Process orchestration is outside Go’s standard library | Requires Docker for the full local path | Low; direct Go commands are documented |
 | Go standard library | HTTP, JSON, TLS, SMTP, logging, cryptography, concurrency, shutdown, and testing | It is sufficient for these boundaries | Small dependency and supply-chain surface, but more explicit code | Individual packages can be replaced behind existing boundaries if measured needs justify it |
 
-[ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) retains the original assessment-only `libpq` choice as history; [ADR 0006](docs/adr/0006-pgx-stdlib-driver.md) supersedes it with the maintained pgx decision.
+I retained the original assessment-only `libpq` choice as history in [ADR 0005](docs/adr/0005-libpq-assessment-adapter.md) and superseded it with the maintained pgx decision in [ADR 0006](docs/adr/0006-pgx-stdlib-driver.md).
 
 ## 9. Repository map
 
@@ -294,7 +294,7 @@ Work-item titles are single-line and at most 200 Unicode code points. After exis
 
 Generic SMTP has an unavoidable ambiguity window: the SMTP server can accept the message and the worker can crash before recording `SENT`. Lease recovery may resend the stable `Message-ID`. A provider API with an idempotency key plus delivery webhooks would reduce this risk.
 
-Mailpit proves real SMTP transport behavior and local server acceptance. It does **not** prove external inbox delivery.
+I use the demo's worker/Mailpit flow to prove real SMTP transport behavior and local server acceptance. It does **not** prove external inbox delivery.
 
 ## 14. Prerequisites
 
@@ -705,7 +705,7 @@ The highest-leverage choices were a modular monolith, PostgreSQL, a transactiona
 
 ### 3. How did you approach assignment, notification delivery, and traceability?
 
-Assignment uses one explicit transaction containing the conditional item update, assignment event, and unique outbox row. The worker handles only committed rows. Every claim outcome is immutable and failed work remains queryable. The API exposes current delivery state and attempt history. This guarantees durable intent and honest at-least-once processing without claiming inbox delivery or exactly once.
+I designed assignment as one explicit transaction containing the conditional item update, assignment event, and unique outbox row. The worker handles only committed rows. Every claim outcome is immutable and failed work remains queryable. The API exposes current delivery state and attempt history. This guarantees durable intent and honest at-least-once processing without claiming inbox delivery or exactly once.
 
 ### 4. Where will this design fail first under growth, load, or team scale, and how would you address it?
 
@@ -713,7 +713,7 @@ PostgreSQL will become the first shared pressure point: connection limits, outbo
 
 ### 5. What did you intentionally simplify or defer, and what debt did you accept?
 
-Deferred: production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, operator/configuration audit beyond the implemented replay ledger, and compliance retention. The original narrow cgo `libpq` accommodation was replaced before submission with maintained pgx while preserving `database/sql` boundaries. Process-local counters and sequential delivery inside each worker process are also accepted limitations.
+I deferred production identity, tenancy, cancellation/reopen, mid-progress reassignment, webhook delivery, provider bounce reconciliation, cloud deployment, operator/configuration audit beyond the implemented replay ledger, and compliance retention. The original narrow cgo `libpq` accommodation was replaced before submission with maintained pgx while preserving `database/sql` boundaries. I also accepted process-local counters and sequential delivery inside each worker process as limitations.
 
 ### 6. What would you put in place before production?
 
@@ -725,7 +725,7 @@ Audit: extend the immutable replay ledger to other operator/configuration events
 
 ### 8. How would you onboard another engineer?
 
-Onboarding another engineer would start with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs. They would run the domain tests, then the PostgreSQL integration flow, inspect one assignment transaction and one notification claim, execute the demo, and practice a failed-notification replay. The new owner would then make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
+I would onboard another engineer with the README walkthrough, lifecycle and authorization matrix, architecture diagrams, and ADRs; have them run the domain tests, PostgreSQL integration flow, one assignment transaction and notification claim, the demo, and a failed-notification replay; then ask the new owner to make a small behavior change with an ADR/test update and walk through the failure-mode/runbook implications in review.
 
 ## 27. AI usage disclosure
 

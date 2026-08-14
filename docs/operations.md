@@ -120,21 +120,21 @@ pg_restore --exit-on-error --no-owner --no-acl \
   --dbname "$RESTORE_DATABASE" work-management.dump
 ```
 
-Credentials do not belong in shell history or checked-in files. The production restore procedure must be rehearsed with the actual managed-database mechanism, access controls, encryption, retention, and recovery objectives.
+I will not place credentials in shell history or checked-in files, and I will rehearse the production restore procedure with the actual managed-database mechanism, access controls, encryption, retention, and recovery objectives.
 
-Apply forward migrations once before rolling out processes:
+I apply forward migrations once before rolling out processes:
 
 ```bash
 go run ./cmd/migrate up
 ```
 
-The runner serializes migration application with an advisory lock and rejects checksum drift. Prefer a forward corrective migration and application rollback compatible with the migrated schema. The destructive command below is for disposable local development only:
+I made the runner serialize migration application with an advisory lock and reject checksum drift, and I prefer a forward corrective migration and application rollback compatible with the migrated schema. The destructive command below is for disposable local development only:
 
 ```bash
 go run ./cmd/migrate down 1
 ```
 
-The initial migration was intentionally edited for this clean-schema assessment. An old schema or Compose volume with a different version-1 checksum must be recreated; never edit `schema_migrations` to bypass the check.
+I intentionally edited the initial migration for this clean-schema assessment. An old schema or Compose volume with a different version-1 checksum must be recreated; I will never edit `schema_migrations` to bypass the check.
 
 ## Local stack cleanup and troubleshooting
 
