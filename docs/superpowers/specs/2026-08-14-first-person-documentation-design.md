@@ -5,14 +5,14 @@
 
 ## Goal
 
-I will rewrite the repository's human-facing documentation so that I speak in
-the first-person singular when I describe my interpretation, decisions,
-implementation, verification, trade-offs, and deferrals. I will preserve the
-existing technical meaning and evidence.
+I will rewrite the repository's human-facing documentation in first-person
+singular for submitter interpretation, decisions, implementation, verification,
+trade-offs, and deferrals while preserving the existing technical meaning and
+evidence.
 
 ## Scope
 
-I will review all 16 tracked documentation files:
+All 16 tracked documentation files will be reviewed:
 
 - `README.md`
 - `docs/architecture.md`
@@ -21,20 +21,22 @@ I will review all 16 tracked documentation files:
 - `docs/assessment/*.md`
 - `docs/adr/*.md`
 
-I will not change Go code, tests, SQL, OpenAPI, shell scripts, workflow files,
-or internal `.superpowers/**` state as part of the voice rewrite.
+Go code, tests, SQL, OpenAPI, shell scripts, workflow files, and internal
+`.superpowers/**` state will remain outside the voice rewrite.
 
 ## Approaches Considered
 
-1. **Blind pronoun replacement:** This is fast, but I rejected it because it
-   would incorrectly turn managers, workers, PostgreSQL, SMTP, Mailpit, and
+I rejected two alternatives before choosing the third:
+
+1. **Blind pronoun replacement:** Fast, but it would incorrectly turn managers,
+   workers, PostgreSQL, SMTP, Mailpit, and
    other runtime actors into the author.
-2. **Reflection-only rewrite:** This is low risk, but I rejected it because most
+2. **Reflection-only rewrite:** Low risk, but most
    of the architecture, operations, ADR, and verification narrative would
    remain impersonal.
-3. **Selective authorial rewrite:** I chose this approach. I will use `I` and
-   `my` only where I am the grammatical agent, while keeping the actual subject
-   for runtime behavior and third-party actions.
+3. **Selective authorial rewrite:** The chosen approach will use `I` and `my` only
+   where the submitter is the grammatical agent, while keeping the actual
+   subject for runtime behavior and third-party actions.
 
 ## Voice Rules
 
@@ -45,17 +47,17 @@ I will convert author-owned statements such as:
 - "The verification showed..." to "I verified..."
 - "The following work was deferred..." to "I deferred..."
 
-I will keep factual runtime subjects intact, for example:
+Factual runtime subjects will remain intact, for example:
 
 - "The worker claims one delivery."
 - "PostgreSQL provides the transaction boundary."
-- "Mailpit proves SMTP acceptance, not external inbox delivery."
+- "The exercised worker/Mailpit flow proves SMTP acceptance, not external inbox delivery."
 
-I will use first-person singular, not the editorial `we`.
+The authorial voice will use first-person singular, not the editorial `we`.
 
 ## Protected Content
 
-I will not rewrite literal or contract-like content:
+Literal or contract-like content will remain unchanged:
 
 - fenced commands, output, JSON, SQL, and Mermaid diagrams
 - tables, schemas, identifiers, routes, status codes, and error codes
@@ -65,12 +67,12 @@ I will not rewrite literal or contract-like content:
 - instructions where the reader, operator, manager, worker, API, database,
   SMTP peer, Mailpit, or reviewer is the real actor
 
-I may rewrite the prose introducing protected content, but I will not alter the
-protected content itself.
+I may rewrite prose introducing protected content, but not the protected
+content itself.
 
 ## Verification
 
-I will verify the change with:
+Verification will use:
 
 1. a file-by-file diff review against the 16-file inventory;
 2. a voice audit for impersonal authorial phrases and accidental first-person
@@ -83,9 +85,9 @@ I will verify the change with:
 
 ## Success Criteria
 
-- I speak in first-person singular wherever I describe my own work.
+- First-person singular identifies the submitter's own work.
 - Runtime actors retain their correct technical subjects.
 - Commands, evidence, contracts, and historical facts remain unchanged.
-- I introduce no new architectural, operational, or verification claim.
+- The rewrite introduces no new architectural, operational, or verification claim.
 - Every changed line traces directly to the requested voice change or its
   verification.

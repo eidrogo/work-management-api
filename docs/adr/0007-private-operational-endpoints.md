@@ -9,26 +9,28 @@ The API originally served unauthenticated health and metrics endpoints on the sa
 
 ## Decision
 
-I chose to run the API's business and operational surfaces on separate listeners. `HTTP_ADDR` remains the public business listener and `API_ADMIN_ADDR` is the API administrative listener, with a direct-run default of `127.0.0.1:9090`. The worker administrative listener defaults to `127.0.0.1:9091`. I keep administrative endpoints unauthenticated and rely on the network boundary. I made Docker Compose bind the in-container administrative listeners to `:9090` and `:9091`, while every published host port binds explicitly to IPv4 loopback. I exclude operational endpoints from the public OpenAPI contract.
+I chose to run the API's business and operational surfaces on separate listeners. `HTTP_ADDR` remains the public business listener and `API_ADMIN_ADDR` is the API administrative listener, with a direct-run default of `127.0.0.1:9090`. The worker administrative listener defaults to `127.0.0.1:9091`. Administrative endpoints remain unauthenticated and rely on the network boundary. Docker Compose binds the in-container administrative listeners to `:9090` and `:9091`, while every published host port binds explicitly to IPv4 loopback. Operational endpoints remain outside the public OpenAPI contract.
 
-I implemented HTTP metrics that restrict method labels to `GET`, `POST`, `PUT`, or `OTHER`, and route labels to the ten business templates plus `/unknown`. Each process retains at most 1,024 distinct `(method, route, status)` keys. The metrics implementation continues updating retained keys, drops new keys beyond the cap, and increments label-free `work_management_http_series_dropped_total`. It includes status on both request-count and duration samples and renders every map-backed family deterministically.
+The HTTP metrics restrict method labels to `GET`, `POST`, `PUT`, or `OTHER`, and route labels to the ten business templates plus `/unknown`. Each process retains at most 1,024 distinct `(method, route, status)` keys. The metrics implementation continues updating retained keys, drops new keys beyond the cap, and increments label-free `work_management_http_series_dropped_total`. It includes status on both request-count and duration samples and renders every map-backed family deterministically.
 
-I implemented a five-second per-process cache for notification backlog gauges. One expired scrape refreshes synchronously; concurrent scrapes serve the last completed state without waiting. A failed refresh retains the last good value, throttles retries for five seconds, and sets `work_management_metrics_scrape_error` until a later refresh succeeds.
+A five-second per-process cache supports notification backlog gauges. One expired scrape refreshes synchronously; concurrent scrapes serve the last completed state without waiting. A failed refresh retains the last good value, throttles retries for five seconds, and sets `work_management_metrics_scrape_error` until a later refresh succeeds.
 
 ## Alternatives considered
 
-- I rejected retaining one listener because, although operationally simple, it preserves the accidental-exposure boundary.
-- I rejected authenticating operational endpoints in the application because it adds credentials and failure modes while still sharing the public socket.
-- I rejected disabling metrics because it removes exposure but also removes required operational visibility.
-- I rejected adding a Prometheus client or cache dependency because it is unnecessary for the fixed metric set and constant-size cache required here.
+I rejected:
+
+- retaining one listener because, although operationally simple, it preserves the accidental-exposure boundary;
+- authenticating operational endpoints in the application because it adds credentials and failure modes while still sharing the public socket;
+- disabling metrics because it removes exposure but also removes required operational visibility; and
+- adding a Prometheus client or cache dependency because it is unnecessary for the fixed metric set and constant-size cache required here.
 
 ## Consequences
 
-I accepted another API port and made the API pre-bind, serve, and drain two servers under one lifecycle. Deployments outside local loopback still require private-network policy or an authenticated operational proxy. I accepted that backlog gauges may be five seconds stale during healthy operation and indefinitely stale across refresh failures, while the error gauge makes that explicit. Process-local counters reset on restart. Rejected HTTP label keys are never retained.
+I accepted another API port, with the API pre-binding, serving, and draining two servers under one lifecycle. Deployments outside local loopback still require private-network policy or an authenticated operational proxy. Backlog gauges may be five seconds stale during healthy operation and indefinitely stale across refresh failures, while the error gauge makes that explicit. Process-local counters reset on restart. Rejected HTTP label keys are never retained.
 
 ## Operational impact
 
-I will scrape only the API and worker administrative listeners. I will alert on `work_management_metrics_scrape_error` and `work_management_http_series_dropped_total`. I will never publish an administrative listener on a public interface. I will configure private ingress or an authenticated proxy in production rather than treating loopback defaults as authorization.
+I will scrape only the API and worker administrative listeners, alert on `work_management_metrics_scrape_error` and `work_management_http_series_dropped_total`, never publish an administrative listener on a public interface, and configure private ingress or an authenticated proxy in production rather than treating loopback defaults as authorization.
 
 ## Revisit when
 

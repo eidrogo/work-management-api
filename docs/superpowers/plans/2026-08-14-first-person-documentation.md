@@ -4,21 +4,23 @@
 
 **Goal:** I will rewrite all submitter-owned documentation prose in first-person singular without changing technical behavior, literal evidence, or the identity of runtime actors.
 
-**Architecture:** I will edit only the 16 tracked submission-documentation files, grouped by reader purpose. Before editing, I will snapshot protected fenced content and required reflection questions; after each group, I will review the diff and run a targeted voice audit. I will finish with the repository's existing static and documentation gates.
+**Architecture:** I will edit only the 16 tracked submission-documentation files, grouped by reader purpose; snapshot protected fenced content and required reflection questions before editing; review the diff and run a targeted voice audit after each group; and finish with the repository's existing static and documentation gates.
 
 **Tech Stack:** Markdown, Git, Python 3 standard library, ripgrep, Go repository verification commands.
 
 ## Global Constraints
 
-- I will use first-person singular (`I`, `me`, `my`), never editorial `we` or `our`.
-- I will use first person only when I am the grammatical agent: interpretation, decisions, implementation, verification, trade-offs, and deferrals.
-- I will retain the real subject for managers, workers, clients, the API, PostgreSQL, SMTP, Mailpit, reviewers, and other runtime actors.
-- I will not change fenced content, commands, output, diagrams, tables, identifiers, routes, states, error codes, hashes, dates, scan IDs, URLs, required reflection questions, or PASS/FAIL facts.
-- I will not turn recommendations or production prerequisites into implemented claims.
-- I will keep ADR 0005 historical and superseded by ADR 0006.
-- I will not edit non-Markdown repository files or `.superpowers/**` internal state.
-- I will make no architectural, operational, security, or verification claim beyond the existing documentation.
-- I will use only the `feature/first-person-documentation` branch.
+I will apply these constraints:
+
+- use first-person singular (`I`, `me`, `my`), never editorial `we` or `our`;
+- use first person only when the submitter is the grammatical agent: interpretation, decisions, implementation, verification, trade-offs, and deferrals;
+- retain the real subject for managers, workers, clients, the API, PostgreSQL, SMTP, Mailpit, reviewers, and other runtime actors;
+- keep fenced content, commands, output, diagrams, tables, identifiers, routes, states, error codes, hashes, dates, scan IDs, URLs, required reflection questions, and PASS/FAIL facts unchanged;
+- keep recommendations and production prerequisites distinct from implemented claims;
+- keep ADR 0005 historical and superseded by ADR 0006;
+- leave non-Markdown repository files and `.superpowers/**` internal state unchanged;
+- make no architectural, operational, security, or verification claim beyond the existing documentation; and
+- use only the `feature/first-person-documentation` branch.
 
 ---
 
@@ -70,7 +72,7 @@ Expected: `wrote /tmp/work-management-api-first-person-protected.json for 16 fil
 
 Apply these exact semantic rules:
 
-- Rewrite purpose, scenario interpretation, assumptions, architecture-choice rationale, guarantees, limitations, security choices, known debt, production roadmap, reflections, and AI disclosure as decisions I made or work I performed.
+- Rewrite purpose, scenario interpretation, assumptions, architecture-choice rationale, guarantees, limitations, security choices, known debt, production roadmap, reflections, and AI disclosure as submitter decisions or work performed.
 - Keep capability lists, authorization matrices, lifecycle diagrams, repository trees, data-model facts, commands, API examples, provider configuration, and runtime-component behavior factual.
 - Preserve the eight required reflection-question headings verbatim.
 - Preserve the distinction between Mailpit SMTP acceptance and external inbox delivery.
@@ -85,9 +87,9 @@ The worker still provides at-least-once delivery rather than exactly-once
 delivery because an SMTP disconnect can occur after provider acceptance.
 ```
 
-- [ ] **Step 3: Rewrite `docs/debrief.md` as my spoken explanation**
+- [ ] **Step 3: Rewrite `docs/debrief.md` as the submitter's spoken explanation**
 
-Use `I chose`, `I designed`, `I enforce`, `I verify`, `I would add`, and `I can demonstrate` for my own reasoning and actions. Keep manager/worker/API/database/SMTP behavior assigned to those actors, and leave fenced demo commands unchanged.
+Use one concise first-person marker for submitter reasoning and actions, with forms such as `I chose`, `I designed`, `I enforce`, `I verify`, `I would add`, and `I can demonstrate`. Keep manager/worker/API/database/SMTP behavior assigned to those actors, and leave fenced demo commands unchanged.
 
 - [ ] **Step 4: Verify Task 1 voice and protected content**
 
@@ -129,18 +131,18 @@ git commit -m "docs: speak in first person in overview"
 
 - [ ] **Step 1: Rewrite architecture ownership prose**
 
-In `docs/architecture.md`, use first person for boundaries and trade-offs I selected. Keep Mermaid diagrams, component names, data flow, transaction ordering, and query ownership statements literal and factual.
+In `docs/architecture.md`, use first person for submitter-selected boundaries and trade-offs. Keep Mermaid diagrams, component names, data flow, transaction ordering, and query ownership statements literal and factual.
 
 - [ ] **Step 2: Rewrite operations ownership prose**
 
-In `docs/operations.md`, use first person when I describe the observability controls, failure handling, runbooks, SLO candidates, and production work I would add. Keep operator commands imperative, metrics names exact, and failure-mode tables factual.
+In `docs/operations.md`, use first person for submitter-owned observability controls, failure handling, runbooks, SLO candidates, and planned production work. Keep operator commands imperative, metrics names exact, and failure-mode tables factual.
 
 - [ ] **Step 3: Rewrite ADR context and consequences**
 
 For ADRs 0001–0007:
 
 - Keep titles, status, date, supersession metadata, headings, and links unchanged.
-- Express the choice and rationale as `I chose`, `I rejected`, `I accepted`, and `I will revisit` where the submitter is the actor.
+- Express the choice and rationale with concise ownership markers such as `I chose`, `I rejected`, `I accepted`, and `I will revisit` where the submitter is the actor.
 - Keep normative runtime behavior and technical imperatives assigned to their real components.
 - Keep ADR 0005 explicitly historical and superseded by ADR 0006.
 
@@ -181,19 +183,19 @@ git commit -m "docs: own architecture and operations decisions"
 
 - [ ] **Step 1: Rewrite interpretation and alternatives prose**
 
-Use first person for assumptions I made, questions I resolved, alternatives I evaluated, and the design I selected. Keep ambiguity and alternatives tables unchanged because they are compact requirement records.
+Use first person for submitter-owned assumptions, resolved questions, evaluated alternatives, and design selection. Keep ambiguity and alternatives tables unchanged because they are compact requirement records.
 
 - [ ] **Step 2: Rewrite the hardening plan as completed ownership**
 
-Use first person for the objective, accepted decisions, work sequence, gates, and scope I selected. Preserve exact baseline/final commits, dates, branch names, commands, and release-gate meanings. Do not make historical unfinished items sound currently open.
+Use first person for the objective, accepted decisions, work sequence, gates, and selected scope. Preserve exact baseline/final commits, dates, branch names, commands, and release-gate meanings. Do not make historical unfinished items sound currently open.
 
 - [ ] **Step 3: Rewrite self-review prose**
 
-Use first person for what I reviewed, implemented, resolved, accepted, and verified. Keep requirement-traceability tables, exact findings, limitations, and references unchanged.
+Use first person for submitter-owned review, implementation, resolution, acceptance, and verification. Keep requirement-traceability tables, exact findings, limitations, and references unchanged.
 
 - [ ] **Step 4: Rewrite verification lead-ins only**
 
-In `docs/assessment/verification.md`, rewrite narrative sentences as `I ran`, `I observed`, `I reproduced`, `I fixed`, and `I reran`. Preserve every heading containing PASS/FAIL, every fenced command/output block, every exact count/hash/date/path, and the chronological distinction between failing baselines and passing fixes.
+In `docs/assessment/verification.md`, coordinate narrative sentences under concise ownership markers such as `I ran`, `I observed`, `I reproduced`, `I fixed`, and `I reran`. Preserve every heading containing PASS/FAIL, every fenced command/output block, every exact count/hash/date/path, and the chronological distinction between failing baselines and passing fixes.
 
 - [ ] **Step 5: Verify Task 3 chronology and evidence**
 

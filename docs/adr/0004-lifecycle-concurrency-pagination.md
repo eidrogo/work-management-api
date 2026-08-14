@@ -9,22 +9,24 @@ I needed work to move forward, concurrent commands not to overwrite each other, 
 
 ## Decision
 
-I chose `UNASSIGNED → ASSIGNED → IN_PROGRESS → COMPLETED`. I allow reassignment only while `ASSIGNED`, requiring a reason. I use version-conditional updates exposed as ETags and keyset cursors over `(created_at, id)` and event sequence.
+I chose `UNASSIGNED → ASSIGNED → IN_PROGRESS → COMPLETED`. The lifecycle allows reassignment only while `ASSIGNED` and requires a reason. The API exposes version-conditional updates as ETags, and keyset cursors cover `(created_at, id)` and event sequence.
 
 ## Alternatives considered
 
-- I rejected last-write-wins because it silently loses intent.
-- I rejected broad pessimistic locks because they increase contention and hide client staleness.
-- I rejected offset pagination because it degrades and shifts under concurrent inserts.
-- I rejected configurable workflows because they add unjustified complexity.
+I rejected:
+
+- last-write-wins because it silently loses intent;
+- broad pessimistic locks because they increase contention and hide client staleness;
+- offset pagination because it degrades and shifts under concurrent inserts; and
+- configurable workflows because they add unjustified complexity.
 
 ## Consequences
 
-I accepted explicit conflicts for stale commands and forward-only cursor traversal. I will design administrative recovery commands explicitly later.
+I accepted explicit conflicts for stale commands and forward-only cursor traversal. Administrative recovery commands remain future design work.
 
 ## Operational impact
 
-I will monitor conflict rate and list-query latency. I use indexes to support manager, worker queue, history, and notification access paths.
+I will monitor conflict rate and list-query latency. Indexes support manager, worker queue, history, and notification access paths.
 
 ## Revisit when
 

@@ -31,4 +31,4 @@
 
 **BLOCKING AMBIGUITIES: NONE**
 
-I consider the stakeholder questions important, but none prevented me from defining a coherent and reversible v1. I deliberately kept expensive speculative commitments such as configurable workflows or multi-tenancy out of the public contract.
+I consider the stakeholder questions important, but could still define a coherent and reversible v1 while deliberately keeping expensive speculative commitments such as configurable workflows or multi-tenancy out of the public contract.
