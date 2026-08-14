@@ -47,9 +47,9 @@ flowchart LR
     Worker --> Ops
 ```
 
-I chose independently runnable API and worker processes that share one module, domain vocabulary, schema, release image, and operational conventions. I made the API pre-bind both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both API servers drain concurrently under one shutdown budget. I made a worker signal separately stop new claims, drain its active SMTP/database attempt while shutting down the admin listener, and force-cancel only after that budget; both goroutines are reaped before database close or return.
+Independently runnable API and worker processes share one module, domain vocabulary, schema, release image, and operational conventions. The API pre-binds both sockets before either starts serving; if the administrative bind fails, the public listener is closed. Both API servers drain concurrently under one shutdown budget. A worker signal separately stops new claims, drains its active SMTP/database attempt while shutting down the admin listener, and force-cancels only after that budget; both goroutines are reaped before database close or return.
 
-I use loopback defaults for the two administrative listeners during direct execution. I use wildcard binds inside Compose containers so forwarding works, while publishing every host port explicitly on `127.0.0.1`. I keep administrative health and metrics routes unauthenticated and absent from the public OpenAPI document; they need a private network boundary outside local development.
+The two administrative listeners default to loopback during direct execution. Compose containers use wildcard binds so forwarding works, while every host port is published explicitly on `127.0.0.1`. Administrative health and metrics routes remain unauthenticated and absent from the public OpenAPI document; they need a private network boundary outside local development.
 
 ## Assignment and notification sequence
 
@@ -96,23 +96,23 @@ sequenceDiagram
     end
 ```
 
-I designed assignment not to wait for SMTP: the item update, event, and initial outbox row either commit together or all roll back. I made the adapter build the complete MIME payload before opening a connection, fold variable headers at structured boundaries, quoted-printable encode the full body, and enforce the 998-octet physical-line ceiling. I use one sticky 1 MiB raw-transport read budget to bound the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. I define `SENT` as the configured SMTP server accepting the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`; I therefore intentionally accept generic SMTP's at-least-once behavior.
+Assignment does not wait for SMTP: the item update, event, and initial outbox row either commit together or all roll back. The adapter builds the complete MIME payload before opening a connection, folds variable headers at structured boundaries, quoted-printable encodes the full body, and enforces the 998-octet physical-line ceiling. One sticky 1 MiB raw-transport read budget bounds the peer-controlled SMTP/TLS input across the complete connection, including a STARTTLS upgrade. `SENT` means the configured SMTP server accepted the completed message transaction; it does not establish inbox placement or final delivery. If acceptance occurs and the worker dies before the fenced database update, recovery can resend the stable `Message-ID`; generic SMTP therefore remains at least once.
 
 The application persists or returns only an allowlisted failure code and fixed generic message. Provider text, certificate details, authentication responses, and credentials are not durable notification data.
 
 ## Idempotency and concurrency ownership
 
-- I require an actor/operation/key/request-hash record for create; its first committed response JSON is immutable. A matching replay returns that snapshot even if related rows later change; key reuse with a different payload fails.
-- I use expected versions for assignment, start, and complete. A stale command fails rather than silently overwriting another actor.
-- I make same-assignee and same-target-state repeats deterministic no-ops that do not append duplicate events or deliveries.
-- I use the worker lease token as an internal database fence and deliberately omit it from manager API representations.
-- I treat notification replay as a reasoned operator action: the state change and an append-only replay event commit atomically, with authenticated manager/request attribution over HTTP or a clearly self-asserted operator identity through the database-access CLI. I stop delivery cycles at 10.
+- Create requires an actor/operation/key/request-hash record; its first committed response JSON is immutable. A matching replay returns that snapshot even if related rows later change; key reuse with a different payload fails.
+- Assignment, start, and complete use expected versions. A stale command fails rather than silently overwriting another actor.
+- Same-assignee and same-target-state repeats are deterministic no-ops that do not append duplicate events or deliveries.
+- The worker lease token is an internal database fence and is deliberately omitted from manager API representations.
+- Notification replay is a reasoned operator action: the state change and an append-only replay event commit atomically, with authenticated manager/request attribution over HTTP or a clearly self-asserted operator identity through the database-access CLI. Delivery cycles stop at 10.
 
 ## Data and query ownership
 
-- I use `work_items` as current operational state; the database protects creator and completed state.
-- I retain `work_item_events`, `notification_attempts`, and `notification_replay_events` as append-only histories.
-- I assign `notification_deliveries` ownership of current delivery, retry, safe-error, cycle, schedule, and lease state.
-- I make notification detail read current delivery, attempts, and replay events inside one read-only `REPEATABLE READ` transaction so one response cannot mix histories committed after its current-state snapshot.
-- I use PostgreSQL `clock_timestamp()` for due checks, lease validity, completion fencing, recovery, retry, and replay scheduling; process clocks do not decide persisted eligibility.
-- I use keyset indexes over the documented sort boundaries for work-item and notification lists, and item sequence order for history. I made large default-planner tests traverse tied pages and reject sequential scans and sort nodes while requiring the matching notification page index. I made claim-plan tests similarly require both ordered partial indexes.
+- `work_items` is current operational state; the database protects creator and completed state.
+- `work_item_events`, `notification_attempts`, and `notification_replay_events` are append-only histories.
+- `notification_deliveries` owns current delivery, retry, safe-error, cycle, schedule, and lease state.
+- Notification detail reads current delivery, attempts, and replay events inside one read-only `REPEATABLE READ` transaction so one response cannot mix histories committed after its current-state snapshot.
+- PostgreSQL `clock_timestamp()` supplies due checks, lease validity, completion fencing, recovery, retry, and replay scheduling; process clocks do not decide persisted eligibility.
+- Keyset indexes cover the documented sort boundaries for work-item and notification lists, and item sequence order for history. Large default-planner tests traverse tied pages and reject sequential scans and sort nodes while requiring the matching notification page index. Claim-plan tests similarly require both ordered partial indexes.
