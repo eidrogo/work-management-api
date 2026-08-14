@@ -31,4 +31,4 @@
 
 **BLOCKING AMBIGUITIES: NONE**
 
-The stakeholder questions are important, but none prevents a coherent and reversible v1. The public contract deliberately avoids expensive speculative commitments such as configurable workflows or multi-tenancy.
+I consider the stakeholder questions important, but none prevented me from defining a coherent and reversible v1. I deliberately kept expensive speculative commitments such as configurable workflows or multi-tenancy out of the public contract.

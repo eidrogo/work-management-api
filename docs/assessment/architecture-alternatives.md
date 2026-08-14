@@ -1,5 +1,7 @@
 # Phase 2 — Architecture Alternatives
 
+I evaluated the alternatives below and selected the approaches recorded in the final column.
+
 | Decision | Alternatives considered | Selected approach and rationale |
 |---|---|---|
 | Application architecture | In-process goroutine, modular monolith, microservices | Modular monolith with API and worker processes preserves one transaction model while allowing independent scaling. |

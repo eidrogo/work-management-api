@@ -1,6 +1,6 @@
 # Verification Evidence
 
-All commands below were executed locally during Task 4 and the final whole-branch reliability pass across 2026-08-12 and 2026-08-13 (America/Argentina/Buenos_Aires). PASS sections use the candidate/final code; deliberate FAIL sections capture the named gap before its correction. Output excerpts are copied from those commands; durations, generated UUIDs, project names, and ephemeral ports are omitted where they are not stable contract evidence.
+I ran all commands below locally during Task 4 and the final whole-branch reliability pass across 2026-08-12 and 2026-08-13 (America/Argentina/Buenos_Aires). I used PASS sections for the candidate/final code and deliberate FAIL sections to capture the named gap before its correction. I copied the output excerpts from those commands and omitted durations, generated UUIDs, project names, and ephemeral ports where they are not stable contract evidence.
 
 ## PASS — tool environment
 
@@ -51,7 +51,7 @@ integration_test.go:57: TEST_DATABASE_URL is not configured
 RED: database tests were skipped
 ```
 
-Correction: the authoritative verifier now starts fresh PostgreSQL first, exports its dynamic loopback URL, consumes `go test -json`, and rejects every test-level `Action == "skip"` plus textual skip markers.
+I fixed this by making the authoritative verifier start fresh PostgreSQL first, export its dynamic loopback URL, consume `go test -json`, and reject every test-level `Action == "skip"` plus textual skip markers.
 
 ## FAIL — audited demo poll false positive
 
@@ -70,7 +70,7 @@ Demo completed successfully for work item aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
 RED: demo reported success after notification polls exhausted
 ```
 
-Correction: one bounded polling helper now returns nonzero after exhaustion, and the live demo selects only the current unique message and durable notification.
+I fixed this with one bounded polling helper that returns nonzero after exhaustion, and I made the live demo select only the current unique message and durable notification.
 
 ## FAIL then PASS — HTTP contract defects
 
@@ -141,7 +141,7 @@ CGO_ENABLED=0 go test ./internal/auth \
   -count=1 -v
 ```
 
-With `HashToken` temporarily mutated to hash a prefixed token, the fixed test failed against the independent known SHA-256 digest and the exact store argument:
+I temporarily mutated `HashToken` to hash a prefixed token and observed the fixed test fail against the independent known SHA-256 digest and the exact store argument:
 
 ```text
 auth_test.go:51: hash="54b3ec7ead5c67b8ed002806161f7550b3451b5fa3d358a40268475d9925246f"
@@ -150,7 +150,7 @@ FAIL
 RED CONFIRMED: SHA-256 mutation rejected with test exit 1
 ```
 
-After restoring the SHA-256 implementation:
+I restored the SHA-256 implementation and reran the test:
 
 ```text
 --- PASS: TestHashTokenIsDeterministic
@@ -168,7 +168,7 @@ CGO_ENABLED=0 go test ./internal/httpapi \
   -run '^TestHTTPPublicMethodsErrorsAndHeaders$' -count=1 -v
 ```
 
-Before the exact-route guard, authenticated dynamic item, notification, and action aliases reached the application and violated the stable 404 expectation:
+Before I added the exact-route guard, I observed authenticated dynamic item, notification, and action aliases reach the application and violate the stable 404 expectation:
 
 ```text
 --- FAIL: TestHTTPPublicMethodsErrorsAndHeaders/work_item_trailing_slash
@@ -181,7 +181,7 @@ Before the exact-route guard, authenticated dynamic item, notification, and acti
 FAIL
 ```
 
-The passing rerun covered all three collections, both dynamic resource families, and every public action; every case asserted a correlated 404 and zero application calls:
+I reran the passing test across all three collections, both dynamic resource families, and every public action; I asserted a correlated 404 and zero application calls in every case:
 
 ```text
 --- PASS: TestHTTPPublicMethodsErrorsAndHeaders/work_item_collection_trailing_slash
@@ -209,7 +209,7 @@ CGO_ENABLED=0 go test ./internal/contract \
   -count=1 -v
 ```
 
-Changing every `#/components/headers/XRequestID` reference to a nonexistent local component still passed the prior contract, proving the false positive:
+I changed every `#/components/headers/XRequestID` reference to a nonexistent local component and observed that the prior contract still passed, proving the false positive:
 
 ```text
 --- PASS: TestOpenAPIContract
@@ -217,7 +217,7 @@ PASS
 RED CONFIRMED: dangling XRequestID references still passed the existing OpenAPI contract
 ```
 
-The repaired gate recursively resolves required header objects and schemas and rejects dangling, cyclic, non-local, and malformed references. It also pins the X-Request-ID bounds, exact bearer challenge, quoted positive ETag pattern, and replay value:
+I fixed the gate to recursively resolve required header objects and schemas and reject dangling, cyclic, non-local, and malformed references. I also pinned the X-Request-ID bounds, exact bearer challenge, quoted positive ETag pattern, and replay value:
 
 ```text
 --- PASS: TestOpenAPIRequiredHeadersFailClosed/dangling_local_ref
@@ -231,7 +231,7 @@ The repaired gate recursively resolves required header objects and schemas and r
 PASS
 ```
 
-Repeating the dangling-reference mutation then failed every affected operation with `missing segment "DOES_NOT_EXIST"` and exited 1.
+I repeated the dangling-reference mutation and observed every affected operation fail with `missing segment "DOES_NOT_EXIST"` and exit 1.
 
 ## PASS — real SMTP transport boundaries
 
@@ -258,7 +258,7 @@ PASS
 ok  github.com/eidrogo/work-management-api/internal/platform/email
 ```
 
-These are SMTP protocol, TLS, and authentication results; they are not external inbox-delivery evidence.
+I treat these as SMTP protocol, TLS, and authentication results, not as external inbox-delivery evidence.
 
 ## PASS — authentication, schema, and PostgreSQL-backed HTTP boundaries
 
@@ -368,7 +368,7 @@ volumes=0
 PASS: real SIGTERM promptly reaped owned test group and cleaned Compose (42 10ms polls)
 ```
 
-The deterministic regression runs through the same generic owned-child wrapper used for both Compose startup phases, normal/race Go suites, and the live demo. `compose-smoke` depends on this regression, while `verify-full` reaches both the regression and Compose authority exactly once through `compose-smoke`.
+I ran the deterministic regression through the same generic owned-child wrapper used for both Compose startup phases, normal/race Go suites, and the live demo. I made `compose-smoke` depend on this regression, while `verify-full` reaches both the regression and Compose authority exactly once through `compose-smoke`.
 
 ## PASS — complete fresh Compose authority
 
@@ -431,7 +431,7 @@ git diff --exit-code -- .
 git diff --cached --exit-code -- .
 ```
 
-Result: exit 0. The final `clean-check` also required `git status --porcelain --untracked-files=all` to be empty; the subsequent explicit status check was empty.
+I observed exit 0. I also made the final `clean-check` require `git status --porcelain --untracked-files=all` to be empty, and I observed that the subsequent explicit status check was empty.
 
 ## FAIL then PASS — final worker drain and SMTP cancellation regressions
 
@@ -475,7 +475,7 @@ PASS: TestWorkerDrainPersistsActiveCompletionBeforeReturning
 PASS: TestWorkerForcedDrainIsBoundedAndLeaseRecovers
 ```
 
-The cancellation interrupt installs the ordinary SMTP deadline before the cancellation callback, so a concurrently canceled context cannot have its immediate deadline overwritten. Signal-driven clean drain retains an uncanceled attempt context through SMTP and fenced completion; only grace expiry cancels it. An already-reaped admin listener is not passed to a potentially blocking `Shutdown` call. Independent review later found that the initial implementation still replaced a completion error when grace expiry and completion failure occurred together; the focused follow-up below closes that boundary.
+I fixed the cancellation and drain handling. The cancellation interrupt installs the ordinary SMTP deadline before the cancellation callback, so a concurrently canceled context cannot have its immediate deadline overwritten. Signal-driven clean drain retains an uncanceled attempt context through SMTP and fenced completion; only grace expiry cancels it. I stopped passing an already-reaped admin listener to a potentially blocking `Shutdown` call. Independent review later found that my initial implementation still replaced a completion error when grace expiry and completion failure occurred together; I closed that boundary in the focused follow-up below.
 
 ## FAIL then PASS — final claim and notification-page plans
 
@@ -486,7 +486,7 @@ TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=1 -v ./internal/notificati
   -run 'TestClaimNextSelectsEarliestEligibilityAcrossPendingAndExpired|TestClaimCandidatePlansUseBoundedPartialIndexes|TestNotificationListPlansUseMatchingIndexesWithoutSorts|TestUnfilteredNotificationKeysetPagination|TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps'
 ```
 
-Initial JSON plans exposed a `Sort` over `notification_deliveries_status_page_idx` for the expired candidate and failed to require the filtered list indexes. After the production-query correction and set-based fixture calibration:
+I observed an initial JSON plan expose a `Sort` over `notification_deliveries_status_page_idx` for the expired candidate, and I found that the tests failed to require the filtered list indexes. I corrected the production query, calibrated the set-based fixture, and reran the tests:
 
 ```text
 PASS: TestClaimNextSelectsEarliestEligibilityAcrossPendingAndExpired
@@ -497,7 +497,7 @@ PASS: TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps/status
 PASS: TestFilteredNotificationKeysetPaginationAcrossTiedTimestamps/work_item
 ```
 
-The two claim checks use the exact production candidate SQL against a 12,000-row mixed backlog. The three list checks use the production query builder against 12,000 tied timestamps. They run under default planner settings, reject `Seq Scan`, `Sort`, and `Incremental Sort`, and require the matching partial/page index.
+I ran the two claim checks with the exact production candidate SQL against a 12,000-row mixed backlog. I ran the three list checks with the production query builder against 12,000 tied timestamps. I used default planner settings and made the checks reject `Seq Scan`, `Sort`, and `Incremental Sort` and require the matching partial/page index.
 
 ## FAIL then PASS — final title and persisted worker-ID contracts
 
@@ -512,7 +512,7 @@ go test -count=1 -v ./cmd/worker \
   -run TestRunRejectsInvalidWorkerIDBeforeOpeningDependencies
 ```
 
-RED evidence included accepted LF/CR/CRLF titles, HTTP `201` for a newline title, a 1,500-octet MIME-Q Subject line, and missing shared worker-ID validation. Final evidence:
+I reproduced accepted LF/CR/CRLF titles, HTTP `201` for a newline title, a 1,500-octet MIME-Q Subject line, and missing shared worker-ID validation. I observed this final evidence after the fixes:
 
 ```text
 PASS: title 200-rune boundary
@@ -594,7 +594,7 @@ PASS: TestServeWorkerJoinsGraceDeadlineWithCompletionError/context_canceled
 PASS: lifecycle/coordinator focused suite under race detector, 20 repetitions
 ```
 
-`RunUntilStopped` now gives a non-nil operation result precedence over context state sampled after the operation. `processBatch` likewise preserves a sender error observed with cancellation and joins sender plus completion errors when completion observes cancellation. At the coordinator boundary, forced shutdown therefore retains both `context.DeadlineExceeded` and the exact completion sentinel through `errors.Is`.
+I fixed the error provenance. `RunUntilStopped` now gives a non-nil operation result precedence over context state sampled after the operation. `processBatch` likewise preserves a sender error observed with cancellation and joins sender plus completion errors when completion observes cancellation. At the coordinator boundary, forced shutdown therefore retains both `context.DeadlineExceeded` and the exact completion sentinel through `errors.Is`.
 
 ## FAIL then PASS — SMTP physical lines and coherent notification detail
 
@@ -609,7 +609,7 @@ TEST_DATABASE_URL="$TEST_DATABASE_URL" go test -count=20 -run '^TestGetUsesOneSn
 go test -count=20 -run '^(TestSMTPClientLineEnforcingServerAccepts|TestBuildMessagePreservesAcceptedBoundaryMIMEValues)' ./internal/platform/email
 ```
 
-RED evidence reproduced both validated blockers:
+I reproduced both validated blockers in the RED evidence:
 
 ```text
 maximum serialized accepted reason line=1019 octets
@@ -634,7 +634,7 @@ PASS: traced Get issues read-only REPEATABLE READ begin, all three reads, and co
 PASS: focused SMTP/config and notification suites under race; both concurrency tests and SMTP boundary matrix pass 20 repetitions
 ```
 
-The SMTP server in these tests is local and proves protocol acceptance only, not external inbox delivery. The reader gate is a test-only pgx query tracer on a dedicated database pool; production `Store.Get`, `Complete`, and `Replay` execute unchanged SQL paths without a production test hook or timing sleep.
+I ran these tests against a local SMTP server, which proves protocol acceptance only, not external inbox delivery. I implemented the reader gate as a test-only pgx query tracer on a dedicated database pool; production `Store.Get`, `Complete`, and `Replay` execute unchanged SQL paths without a production test hook or timing sleep.
 
 ## FAIL then PASS — PostgreSQL-incompatible U+0000 input
 
@@ -677,19 +677,19 @@ PASS: complete normal and race suites against live PostgreSQL
 
 ## FAIL then PASS — invalid UTF-8 idempotency keys
 
-Raw HTTP/1.1 permits `obs-text` bytes in header values. A manager request with byte `0xff` in `Idempotency-Key` originally reached PostgreSQL and failed with SQLSTATE 22021 after transactional work. Regression-first domain, live-service, and raw-wire tests now require a stable field-specific `400 INVALID_INPUT` before ID generation or transaction work, zero database side effects, no internal-error log or 500 metric, and preserved authentication/authorization precedence. A valid non-ASCII key such as `válido-界` remains accepted.
+Raw HTTP/1.1 permits `obs-text` bytes in header values. I reproduced a manager request with byte `0xff` in `Idempotency-Key` reaching PostgreSQL and failing with SQLSTATE 22021 after transactional work. I added regression-first domain, live-service, and raw-wire tests that require a stable field-specific `400 INVALID_INPUT` before ID generation or transaction work, zero database side effects, no internal-error log or 500 metric, and preserved authentication/authorization precedence. I kept a valid non-ASCII key such as `válido-界` accepted.
 
-Persisted JSON text validation excludes U+0000 only. It deliberately preserves each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization. The separate idempotency-key rule rejects malformed byte sequences but keeps valid Unicode.
+I made persisted JSON text validation exclude U+0000 only. I deliberately preserved each field's prior whitespace, length, newline, and other control-character behavior rather than claiming general Unicode sanitization. I made the separate idempotency-key rule reject malformed byte sequences but keep valid Unicode.
 
 ## FAIL then PASS — package-manager-free scratch runtime
 
-The final scan found that the digest-pinned Debian runtime still resolved unversioned `ca-certificates` and `curl` packages during every build. The replacement uses an exact three-stage graph: a tag-and-digest-pinned Go toolchain, an internal build stage, and a final `scratch` stage. It copies only the toolchain CA bundle, six `CGO_ENABLED=0` repository commands, and tracked migrations; it runs as numeric `65532:65532`. A bounded static probe accepts only numeric loopback endpoints, issues one exact `GET /health/ready` without proxies or redirects, caps headers/body/time, and requires HTTP 200.
+The final scan found that the digest-pinned Debian runtime still resolved unversioned `ca-certificates` and `curl` packages during every build. I replaced it with an exact three-stage graph: a tag-and-digest-pinned Go toolchain, an internal build stage, and a final `scratch` stage. I copied only the toolchain CA bundle, six `CGO_ENABLED=0` repository commands, and tracked migrations into the runtime and made it run as numeric `65532:65532`. I added a bounded static probe that accepts only numeric loopback endpoints, issues one exact `GET /health/ready` without proxies or redirects, caps headers/body/time, and requires HTTP 200.
 
-Except for the `go.sum`-locked module graph, regression gates reject package managers, unlocked downloaders, VCS fetches, extra/external stages, remote ADD/external COPY, unexpected runtime instructions, incomplete command sets, named/root users, and unpinned toolchains. The actual-image inspection reads image layers rather than Docker-injected container mount paths, exact-compares the runtime filesystem, and compares every migration byte-for-byte with the tracked source. Direct `docker-build`, CI, `make up`, and Compose smoke enforce the source gate and actual-image inspection. The API image is explicitly named with `pull_policy: build` by the rendered Compose model rather than discovered through optional builder-specific image labels; the failure-injection regression suppresses the old label lookup and proves local `make up` still reaches inspection without creating or replacing Compose resources. The rendered-config gate verifies the local-build pull policy, and clean Compose startup proves migrate, seed, API, worker, and both readiness probes.
+I added regression gates that, except for the `go.sum`-locked module graph, reject package managers, unlocked downloaders, VCS fetches, extra/external stages, remote ADD/external COPY, unexpected runtime instructions, incomplete command sets, named/root users, and unpinned toolchains. The actual-image inspection reads image layers rather than Docker-injected container mount paths, exact-compares the runtime filesystem, and compares every migration byte-for-byte with the tracked source. Direct `docker-build`, CI, `make up`, and Compose smoke enforce the source gate and actual-image inspection. I explicitly named the API image with `pull_policy: build` in the rendered Compose model rather than discovering it through optional builder-specific image labels; the failure-injection regression suppresses the old label lookup and proves local `make up` still reaches inspection without creating or replacing Compose resources. I used the rendered-config gate to verify the local-build pull policy and clean Compose startup to prove migrate, seed, API, worker, and both readiness probes.
 
 ## FAIL then PASS — bounded SMTP peer input and immutable Docker frontend
 
-Provenance: sealed Standard security scan `e85bce0a-eb40-4d20-bb52-762979bc126d` reported both findings against clean `7b7b53e09d444ce27ad8e69cbbf7326f175579b2`. The remediation logs are under `/tmp/work-management-api-security-fix-evidence/`: `smtp-red.txt`, `smtp-quit-red.txt`, `smtp-final-audit-red.txt`, `smtp-final-audit-green.txt`, `smtp-final-audit-race-green.txt`, `dockerfile-syntax-red.txt`, and `dockerfile-syntax-mutations-green.txt`.
+Provenance: sealed Standard security scan `e85bce0a-eb40-4d20-bb52-762979bc126d` reported both findings against clean `7b7b53e09d444ce27ad8e69cbbf7326f175579b2`. I recorded the remediation logs under `/tmp/work-management-api-security-fix-evidence/`: `smtp-red.txt`, `smtp-quit-red.txt`, `smtp-final-audit-red.txt`, `smtp-final-audit-green.txt`, `smtp-final-audit-race-green.txt`, `dockerfile-syntax-red.txt`, and `dockerfile-syntax-mutations-green.txt`.
 
 Focused commands:
 
@@ -703,7 +703,7 @@ go test -race ./internal/platform/email \
 make dockerfile-syntax-test
 ```
 
-RED evidence reproduced both sealed findings and the acceptance-boundary edge:
+I reproduced both sealed findings and the acceptance-boundary edge in the RED evidence:
 
 ```text
 oversized greeting/EHLO/AUTH/envelope/DATA replies were retryable or reached the wrong failure class
@@ -727,7 +727,7 @@ PASS: the NUL-safe offline gate case-insensitively covers Dockerfile, Dockerfile
 PASS: focused SMTP matrix passes ten normal and ten race repetitions
 ```
 
-The SMTP cap is cumulative raw transport input, so TLS handshake/record bytes consume the same fixed quota and decrypted text cannot expand without bounded ciphertext. The post-DATA `250` is the durable server-acceptance boundary: a later QUIT failure must not create a duplicate-producing retry. The Docker frontend remains a tag-plus-index-digest pin; monthly Dependabot candidates require manual digest verification and the offline mutation gate before acceptance.
+I made the SMTP cap cumulative across raw transport input, so TLS handshake/record bytes consume the same fixed quota and decrypted text cannot expand without bounded ciphertext. I treated the post-DATA `250` as the durable server-acceptance boundary: a later QUIT failure must not create a duplicate-producing retry. I kept the Docker frontend as a tag-plus-index-digest pin; monthly Dependabot candidates require manual digest verification and the offline mutation gate before acceptance.
 
 ## FAIL then PASS — implicit-TLS AUTH state mutation gate
 
@@ -755,7 +755,7 @@ exact outer-wrapper mutation applied
 ok  github.com/eidrogo/work-management-api/internal/platform/email
 ```
 
-The mutation survived because the test's logical host was `127.0.0.1`, not because production had lost TLS state.
+I observed the mutation survive because the test's logical host was `127.0.0.1`, not because production had lost TLS state.
 
 GREEN evidence after the test correction:
 
@@ -767,7 +767,7 @@ send error=The email service returned an unexpected response. credentials observ
 PASS: corrected test killed the exact outer-wrapper mutation before AUTH credentials were observed
 ```
 
-The absolute `localhost.` logical name killed the mutation on the networked macOS/Linux environments first tested, but later offline Linux verification found that it still depended on DNS when `/etc/hosts` contained only `localhost`. The DNS-free portability correction below supersedes that intermediate test input. `TLSServerName` remains `localhost` for certificate identity, and no production-only test seam or global dial hook was added.
+I initially used the absolute `localhost.` logical name to kill the mutation on the networked macOS/Linux environments tested, but later offline Linux verification found that it still depended on DNS when `/etc/hosts` contained only `localhost`. I superseded that intermediate test input with the DNS-free portability correction below. I kept `TLSServerName` as `localhost` for certificate identity and did not add a production-only test seam or global dial hook.
 
 ## FAIL then PASS — DNS-free implicit-TLS mutation-gate portability
 
@@ -806,4 +806,4 @@ PASS: exact outer-wrapper mutation fails locally before AUTH, credentials observ
 PASS: exact outer-wrapper mutation fails in Ubuntu and Debian Linux/arm64 --network none before AUTH, credentials observed=false
 ```
 
-`::ffff:127.0.0.1` requires no resolver, reaches the real IPv4 loopback listener on the supported macOS and Linux environments, and is not one of `net/smtp.PlainAuth`'s exact plaintext exemptions (`localhost`, `127.0.0.1`, `::1`). The test therefore remains a real production-path oracle for the concrete implicit `*tls.Conn` invariant without external DNS, `/etc/hosts` changes, a production dial seam, or a global test hook.
+I selected `::ffff:127.0.0.1` because it requires no resolver, reaches the real IPv4 loopback listener on the supported macOS and Linux environments, and is not one of `net/smtp.PlainAuth`'s exact plaintext exemptions (`localhost`, `127.0.0.1`, `::1`). I therefore kept the test as a real production-path oracle for the concrete implicit `*tls.Conn` invariant without external DNS, `/etc/hosts` changes, a production dial seam, or a global test hook.
